@@ -39,6 +39,11 @@ from tempfile import mkdtemp
 
 # =========================================================
 USE_GPU = True
+DO_PARALLEL = True
+USE_RGB = False #False = use dem only
+OVERLAP = True
+CALC_CONF = True
+# =======================================================
 
 if USE_GPU == True:
    ##use the first available GPU
@@ -546,7 +551,7 @@ def mask_chunk(sample_filename, tilesize):
 
         est_label[est_label<threshold] = 0
         est_label[est_label>threshold] = 1
-        conf = (100*conf).astype('uint8')  #turn this into 8-bit for more efficient ram usage
+        #conf = (100*conf).astype('uint8')  #turn this into 8-bit for more efficient ram usage
         # conf[conf<50]=50
         # conf[conf>100]=100
 
@@ -561,10 +566,6 @@ tilesize = 1024 #
 TARGET_SIZE = [tilesize, tilesize]
 BATCH_SIZE = 6
 NCLASSES = 1
-DO_PARALLEL = True
-USE_RGB = False #False = use dem only
-OVERLAP = True
-CALC_CONF = False #True
 
 if USE_RGB:
     weights = 'orthoclip_2class_batch_6.h5'
@@ -680,7 +681,7 @@ counter=0
 if OVERLAP:
     out_mask = np.zeros((padwidth+int(tilesize/2), padheight+int(tilesize/2)), dtype=np.uint8)
     if CALC_CONF:
-        out_conf = np.ones((padwidth+int(tilesize/2), padheight+int(tilesize/2)), dtype=np.uint8)
+        out_conf = np.ones((padwidth+int(tilesize/2), padheight+int(tilesize/2)), dtype=np.float32)
     n = np.zeros((padwidth+int(tilesize/2), padheight+int(tilesize/2)), dtype=np.uint8)
     for i in tqdm(range(0, width, int(tilesize/2))):
         for j in range(0, height, int(tilesize/2)):
@@ -691,7 +692,7 @@ if OVERLAP:
             if conf is not None:
                 out_mask[i:i+tilesize,j:j+tilesize] += est_label.astype('uint8') #fill in that portion of big mask
                 if CALC_CONF:
-                    out_conf[i:i+tilesize,j:j+tilesize] += conf.astype('uint8') #fill out that portion of the big confidence raster
+                    out_conf[i:i+tilesize,j:j+tilesize] += conf.astype('float32') #fill out that portion of the big confidence raster
                 n[i:i+tilesize,j:j+tilesize] += 1
 
             counter +=1
@@ -700,7 +701,7 @@ if OVERLAP:
             del est_label
 
     #out_mask[out_mask==np.nan]=0
-    out_mask = np.divide(out_mask, n+0.00001)# out_mask/n #divide out by number of times each cell was sampled
+    out_mask = np.divide(out_mask, n, out=out_mask, casting='unsafe' )# out_mask/n #divide out by number of times each cell was sampled
     out_mask = out_mask.astype('uint8')
     out_mask[out_mask>1] = 1
 
@@ -717,7 +718,7 @@ if OVERLAP:
     gc.collect()
 
     if CALC_CONF:
-        out_conf = out_conf/100
+        #out_conf = out_conf/100
         out_conf = out_conf.astype('float32')
         out_conf = np.divide(out_conf, n+0.00001) #out_conf/n
         del n
