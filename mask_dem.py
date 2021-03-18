@@ -35,7 +35,9 @@ from tkinter import *
 from skimage.io import imsave
 from skimage.transform import resize
 from tqdm import tqdm
-from tempfile import mkdtemp
+#from tempfile import mkdtemp
+from tempfile import TemporaryFile
+from datetime import datetime
 
 # =========================================================
 USE_GPU = True
@@ -595,6 +597,7 @@ root = Tk()
 root.filename =  filedialog.askopenfilename(initialdir = "./",title = "Select file",filetypes = (("DSM/DEM geotiff file","*.tif"),("all files","*.*")))
 dem = root.filename
 root.withdraw()
+print(datetime.now())
 print("Working on %s" % (dem))
 
 if USE_RGB:
@@ -608,6 +611,7 @@ if USE_RGB:
 ### step 1 : make chunks and save them to temporary png files
 print('.....................................')
 print('Making small image chunks ...')
+print(datetime.now())
 
 with rasterio.open(dem) as src:
     profile = src.profile
@@ -670,6 +674,7 @@ model.load_weights(weights)
 ## step 3: use the model for prediction
 print('.....................................')
 print('Using model for prediction on images ...')
+print(datetime.now())
 
 sample_filenames = sorted(tf.io.gfile.glob('tmp/stdev'+os.sep+'*.png'))
 if OVERLAP:
@@ -699,7 +704,7 @@ if OVERLAP:
             if CALC_CONF:
                 del conf
             del est_label
-
+    print(datetime.now())
     #out_mask[out_mask==np.nan]=0
     out_mask = np.divide(out_mask, n, out=out_mask, casting='unsafe' )# out_mask/n #divide out by number of times each cell was sampled
     out_mask = out_mask.astype('uint8')
@@ -709,7 +714,8 @@ if OVERLAP:
     out_mask = np.rot90(np.fliplr(out_mask))
     out_shape = out_mask.shape
 
-    outfile = os.path.join(mkdtemp(), 'mask.dat')
+    #outfile = os.path.join(mkdtemp(), 'mask.dat')
+    outfile = TemporaryFile()
     fp = np.memmap(outfile, dtype='uint8', mode='w+', shape=out_mask.shape)
     fp[:] = out_mask[:]
     fp.flush()
@@ -792,6 +798,7 @@ with rasterio.open(dem) as src: #rgb
 if CALC_CONF:
     print('.....................................')
     print('Writing out mask confidence raster ...')
+    print(datetime.now())
 
     # print(out_conf.shape)
     profile['dtype'] = 'float32'
@@ -816,6 +823,7 @@ print(out_mask.shape)
 ## dem
 print('.....................................')
 print('Writing out masked DEM ...')
+print(datetime.now())
 
 with rasterio.open(dem) as src: #rgb
     profile = src.profile
@@ -835,6 +843,7 @@ gc.collect()
 ##mask
 print('.....................................')
 print('Writing out mask raster ...')
+print(datetime.now())
 
 profile['nodata'] = 0.0
 profile['dtype'] = 'uint8'
@@ -865,7 +874,8 @@ if USE_RGB:
 else:
     from tkinter import messagebox
     root= Tk()
-    MsgBox = messagebox.askquestion ('Mask ortho?','Would you like to use this mask to mask an ortho?',icon = 'warning')
+    #MsgBox = messagebox.askquestion ('Mask ortho?','Would you like to use this mask to mask an ortho?',icon = 'warning')
+    MsgBox = 'no'
     root.destroy()
     if MsgBox == 'yes':
         root = Tk()
@@ -875,6 +885,7 @@ else:
 
         print('.....................................')
         print('Writing out masked RGB ortho ...')
+        print(datetime.now())
 
         with rasterio.open(rgb) as src: #rgb
             profile = src.profile
@@ -891,4 +902,6 @@ else:
         gc.collect()
 
 if 'outfile' in locals():
-    os.remove(outfile)
+    #os.remove(outfile)
+    outfile.close()
+    print(datetime.now())
