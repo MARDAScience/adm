@@ -1,0 +1,15 @@
+#conda env create --file auto_dem_masker.yml
+#conda activate adm
+name: adm
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+ - python
+ - scipy
+ - numpy
+ - scikit-image
+ - tensorflow-gpu
+ - ipython
+ - rasterio
+ - tqdm
