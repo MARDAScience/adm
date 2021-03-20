@@ -61,13 +61,17 @@ which tells the program to analyze all the .tif files in the root directory.
 Optionally, use the `-t` flag if you'd like to use the Otsu threshold instead of a hard threshold of 0.5 to separate good from bad data, e.g.
 
 ```
-python mask_dem.py -t
+python mask_dem.py -t otsu
 ```
 
-or
+or another hard threshold
 
 ```
-python mask_dem.py -m autobatch -t
+python mask_dem.py -m autobatch -t 0.6
+```
+
+```
+python mask_dem.py -m autobatch -t 0.4
 ```
 
 
