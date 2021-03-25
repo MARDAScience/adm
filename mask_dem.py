@@ -31,11 +31,13 @@ import os, time, sys, getopt
 from scipy.signal import convolve2d
 from tkinter import filedialog
 from tkinter import *
-from skimage.io import imsave
+# from skimage.io import imsave
 from tqdm import tqdm
 from tempfile import TemporaryFile
 from datetime import datetime
 from skimage.filters import threshold_otsu
+from skimage.filters.rank import median
+from skimage.morphology import disk
 
 # =========================================================
 USE_GPU = True
@@ -69,13 +71,13 @@ print("Num GPUs Available: ", len(tf.config.experimental.list_physical_devices('
 
 # =========================================================
 # =========================================================
-def rescale(dat,mn,mx):
-   """
-   rescales an input dat between mn and mx
-   """
-   m = np.min(dat.flatten())
-   M = np.max(dat.flatten())
-   return (mx-mn)*(dat-m)/(M-m)+mn
+# def rescale(dat,mn,mx):
+#    """
+#    rescales an input dat between mn and mx
+#    """
+#    m = np.min(dat.flatten())
+#    M = np.max(dat.flatten())
+#    return (mx-mn)*(dat-m)/(M-m)+mn
 
 #-----------------------------------
 def std_convoluted(image, N):
@@ -108,6 +110,7 @@ def z_exp(z,n=0.5):
 def load_ODM_json(weights_file):
     """
     load keras Res-UNet model implementation from json file
+    mode=1, dem only
     """
     weights_path = weights_file
     json_file = open(weights_path.replace('.h5','.json'), 'r')
@@ -118,6 +121,17 @@ def load_ODM_json(weights_file):
     model.load_weights(weights_path)
     model.compile(optimizer = 'adam', loss = 'categorical_crossentropy')#, metrics = [mean_iou, dice_coef])
     return model
+
+#-----------------------------------
+def medianfiltmask(est_label, radius=7):
+    """
+    mask a 1 or 3 band image, band by band for memory saving
+    """
+    out_label = np.ones_like(est_label)
+    for k in range(est_label.shape[-1]):
+        out_label[:,:,k] = median(est_label[:,:,k],disk(radius))
+    return out_label
+
 
 #-----------------------------------
 def mask(bigtiff,profile,out_mask):
@@ -153,7 +167,7 @@ def mask(bigtiff,profile,out_mask):
     return bigtiff
 
 #-----------------------------------
-def main(dem, threshold):
+def main(dem, model_mode): #threshold,
     """
     main program
     """
@@ -163,7 +177,26 @@ def main(dem, threshold):
     print("Working on %s" % (dem))
     tilesize = 1024 #
     verbose = True
-    weights_file = 'model'+os.sep+'orthoclip_stdevonly_2class_batch_6.h5'
+
+    if model_mode==1: #dem only
+        print('DEM-only mode')
+        weights_file = 'model'+os.sep+'orthoclip_demonly_3class_batch_6.h5'
+    elif model_mode==2: #stdev only
+        print('STDEV-only mode')
+        weights_file = 'model'+os.sep+'orthoclip_stdevonly_3class_batch_6.h5'
+    elif model_mode==3: #rgb only
+        print('Ortho-only mode')
+        weights_file = 'model'+os.sep+'orthoclip_orthoonly_3class_batch_6.h5'
+    elif model_mode==4: #rgb+dem
+        print('Ortho+DEM mode')
+        weights_file = 'model'+os.sep+'orthoclip_RGBdem_3class_batch_6.h5'
+    else: #rgb+stdev
+        print('Ortho+STDEV mode')
+        weights_file = 'model'+os.sep+'orthoclip_RGBstdev_3class_batch_6.h5'
+
+    do_plot=True #False #True
+    if do_plot:
+        import matplotlib.pyplot as plt
 
     if verbose:
         # start timer
@@ -178,6 +211,7 @@ def main(dem, threshold):
 
     width = profile['width']
     height = profile['height']
+
 
     padwidth = width + (tilesize - width % tilesize)
     padheight = height + (tilesize - height % tilesize)
@@ -200,13 +234,21 @@ def main(dem, threshold):
     try:
         #pre-allocate large arrays to be eventually written to geotiff format files, n, out_mask and out_conf
         #each are padded to accomodate half a window length overlap
-        out_mask = np.zeros((padwidth+int(tilesize/2), padheight+int(tilesize/2)), dtype=np.float16)
-        if CALC_CONF:
-            out_conf = np.ones((padwidth+int(tilesize/2), padheight+int(tilesize/2)), dtype=np.float32)
-        n = np.zeros((padwidth+int(tilesize/2), padheight+int(tilesize/2)), dtype=np.uint8)
+        # out_mask = np.zeros((padwidth+int(tilesize/2), padheight+int(tilesize/2)), dtype=np.float16)
+        # if CALC_CONF:
+        #     out_conf = np.ones((padwidth+int(tilesize/2), padheight+int(tilesize/2)), dtype=np.float32)
+        # n = np.zeros((padwidth+int(tilesize/2), padheight+int(tilesize/2)), dtype=np.uint8)
 
-        for i in tqdm(range(0, padwidth, int(tilesize/2))):
-            for j in range(0, padheight, int(tilesize/2)):
+        out_mask = np.zeros((padwidth, padheight), dtype=np.uint8)
+        if CALC_CONF:
+            out_conf = np.ones((padwidth, padheight), dtype=np.float32)
+        #n = np.zeros((padwidth, padheight), dtype=np.uint8)
+        # i = 4096
+        # j = 9216
+        i = 2048 ; j = 10240
+
+        for i in tqdm(range(0, padwidth, tilesize)):
+            for j in range(0, padheight, tilesize):
                 window = rasterio.windows.Window(i,j,tilesize, tilesize)
 
                 with rasterio.open(dem) as src:
@@ -214,46 +256,93 @@ def main(dem, threshold):
                     orig = src.read(window=window).squeeze()
 
                 if len(np.unique(orig))>1:
+                    #print(i,j)
                     orig[orig==profile['nodata']] = 0
-                    #compute stdev raster using convoluttion with a 3x3 kernel
-                    image = std_convoluted(orig, 3)
-                    del orig
-                    # scale image exponentially using n=.5
-                    image = z_exp(image,n=0.5)
-                    image = np.squeeze(image).T
+
+                    # if do_plot:
+                    #     plt.subplot(233); plt.imshow(image, cmap='gray'); plt.axis('off'); plt.colorbar(shrink=.5)
+                    if model_mode<3:
+                        image = np.squeeze(orig).T
+                    elif model_mode==3: #rgb only
+                        image = np.squeeze(orig[:3,:,:]).T
+
+                    if model_mode==2: #stdev only
+                        ##compute stdev raster using convoluttion with a 3x3 kernel
+                        image = std_convoluted(orig, 3)
+                        del orig
+                        ##scale image exponentially using n=.5
+                        image = z_exp(image,n=0.5)
+
+                    if do_plot:
+                        plt.subplot(221); plt.imshow(image, cmap='gray'); plt.axis('off'); plt.colorbar(shrink=.5)
 
                     if image.shape[0] < tilesize:
-                        subset_pad = np.zeros((tilesize, tilesize), dtype=profile['dtype'])
-                        x,y=image.shape
-                        subset_pad[:x,:y] = image
+
+                        if model_mode<3:
+                            subset_pad = np.zeros((tilesize, tilesize), dtype=profile['dtype'])
+                            x,y=image.shape
+                            subset_pad[:x,:y] = image
+                        elif model_mode==3:
+                            x,y,z=image.shape
+                            subset_pad = np.zeros((tilesize, tilesize,z), dtype=profile['dtype'])
+                            subset_pad[:x,:y,:z] = image
+
                         del image
                         image = subset_pad.copy()
                         del subset_pad
 
                     elif image.shape[1] < tilesize:
-                        subset_pad = np.zeros((tilesize, tilesize), dtype=profile['dtype'])
-                        x,y=image.shape
-                        subset_pad[:x,:y] = image
+                        if model_mode<3:
+                            subset_pad = np.zeros((tilesize, tilesize), dtype=profile['dtype'])
+                            x,y=image.shape
+                            subset_pad[:x,:y] = image
+                        elif model_mode==3:
+                            x,y,z=image.shape
+                            subset_pad = np.zeros((tilesize, tilesize,z), dtype=profile['dtype'])
+                            subset_pad[:x,:y,:z] = image
                         del image
-                        image = subset_pad.copy()/255
+                        image = subset_pad.copy()#/255
                         del subset_pad
 
                     image = tf.expand_dims(image, 0)
                     # use model in prediction mode
                     est_label = model.predict(image , batch_size=1).squeeze()
+                    image = image.numpy().squeeze()
+
+                    est_label = medianfiltmask(est_label, radius=21)/255.
+
+                    conf = np.std(est_label, -1)
+
+                    # est_label = np.argmax(est_label, -1) #2=bad, 1=good, 0=bad
+                    # est_label = (est_label==1).astype('uint8') #only good
+
+                    est_label_orig = est_label.copy()
+                    est_label = np.zeros((est_label.shape[0], est_label.shape[1])) #np.argmax(est_label, -1).astype(np.uint8).T
+                    est_label[est_label_orig[:,:,0]>.5] = 1  #nodata
+                    est_label[est_label_orig[:,:,1]>.5] = 1  #good
+                    est_label[est_label_orig[:,:,2]>.25] = 0  #bad
+                    est_label[est_label>1] = 1
+
+                    if do_plot:
+                        plt.subplot(222); plt.imshow(est_label, cmap='bwr'); plt.axis('off'); plt.colorbar(shrink=.5)
+                        plt.subplot(223); plt.imshow(image, cmap='gray'); plt.imshow(est_label, cmap='bwr', alpha=0.3); plt.axis('off'); plt.colorbar(shrink=.5)
 
                     #confidence is computed as deviation from 0.5
-                    conf = 1-est_label
-                    conf[est_label<.5] = est_label[est_label<.5]
-                    conf = 1-conf
+                    #conf = np.abs(est_label-0.5)/2#1-est_label
+                    #conf[est_label<.5] = est_label[est_label<.5]
+                    #conf = 1-conf
+
+                    if do_plot:
+                        plt.subplot(224); plt.imshow(conf, cmap='Blues'); plt.axis('off'); plt.colorbar(shrink=.5)
+                        plt.savefig('aom_ex'+str(i)+'_'+str(j)+'.png', dpi=300); plt.close()
 
                     #fill out big rasters
-                    out_mask[i:i+tilesize,j:j+tilesize] += est_label.astype('float16') #fill in that portion of big mask
+                    out_mask[i:i+tilesize,j:j+tilesize] += est_label.astype('uint8') #fill in that portion of big mask
                     del est_label
                     if CALC_CONF:
                         out_conf[i:i+tilesize,j:j+tilesize] += conf.astype('float32') #fill out that portion of the big confidence raster
                         del conf
-                    n[i:i+tilesize,j:j+tilesize] += 1
+                    #n[i:i+tilesize,j:j+tilesize] += 1
 
         #=======================================================
         ##step 4: crop, rotate arrays, divide by N, and write to memory mapped temporary file
@@ -262,23 +351,40 @@ def main(dem, threshold):
         out_mask = np.rot90(np.fliplr(out_mask))
         out_shape = out_mask.shape
 
-        n = n[:width,:height]
-        n = np.rot90(np.fliplr(n))
+        # n = n[:width,:height]
+        # n = np.rot90(np.fliplr(n))
         out_conf = out_conf[:width,:height]
         out_conf = np.rot90(np.fliplr(out_conf))
 
-        out_mask = np.divide(out_mask, n, out=out_mask, casting='unsafe' )# out_mask/n #divide out by number of times each cell was sampled
+        # out_mask = np.divide(out_mask, n, out=out_mask, casting='unsafe' )
 
-        if threshold == 'otsu':
-            out_mask[np.isnan(out_mask)]=0
-            thres = threshold_otsu(out_mask)
-            print("Otsu threshold: %f" % (thres))
-        else:
-            thres = threshold
+        # if threshold == 'otsu':
+        #     out_mask[np.isnan(out_mask)]=0
+        #     thres = threshold_otsu(out_mask)
+        #     print("Otsu threshold: %f" % (thres))
+        # else:
+        #     thres = threshold
 
-        out_mask[out_mask<thres] = 0
-        out_mask[out_mask>thres] = 1
         out_mask = out_mask.astype('uint8')
+        out_mask = (out_mask!=1).astype('uint8')
+        #
+        #
+        # out_mask[out_mask<0.5] = 0
+        # out_mask[out_mask<=1] = 0
+        # out_mask[out_mask>=1] = 1
+
+        if CALC_CONF:
+            # out_conf = np.divide(out_conf, np.maximum(0,n.astype('float')), out=out_conf, casting='unsafe')
+            out_conf[out_conf==np.nan]=0
+            out_conf[out_conf==np.inf]=0
+            out_conf[out_conf<=0] = 0
+            out_conf = out_conf-1
+            #out_conf[out_conf>.5] = 0
+            # out_conf[out_conf==-1] = 0
+            #out_mask = np.memmap(outfile, dtype='uint8', mode='r', shape=out_shape)
+            out_conf[out_mask==0] = 0
+
+        # out_mask[out_conf<.25] = 0
 
         outfile = TemporaryFile()
         fp = np.memmap(outfile, dtype='uint8', mode='w+', shape=out_mask.shape)
@@ -287,19 +393,9 @@ def main(dem, threshold):
         del out_mask
         del fp
 
-        if CALC_CONF:
-            out_conf = np.divide(out_conf, n+0.00001, out=out_conf, casting='unsafe') #out_conf/n
-            out_conf = out_conf-1
-            out_conf[out_conf==np.nan]=0.5
-            out_conf[out_conf==np.inf]=0.5
-            out_mask = np.memmap(outfile, dtype='uint8', mode='r', shape=out_shape)
-            out_conf[out_mask==0] = 0
-            # rescale
-            out_conf = rescale(out_conf, 0.5, 1.0)
-            out_conf[out_mask==0] = 0
 
         #write out to temporary memory mapped file
-        del n
+        # del n
         outfile2 = TemporaryFile()
         fp = np.memmap(outfile2, dtype='float32', mode='w+', shape=out_conf.shape)
         fp[:] = out_conf[:]
@@ -307,6 +403,7 @@ def main(dem, threshold):
         del out_conf
         del fp
 
+        #read back in again
         out_conf = np.memmap(outfile2, dtype='float32', mode='r', shape=out_shape)
 
         if 'out_mask' not in locals():
@@ -411,29 +508,28 @@ if __name__ == '__main__':
 
     argv = sys.argv[1:]
     try:
-        opts, args = getopt.getopt(argv,"h:m:t:")
+        opts, args = getopt.getopt(argv,"h:m:t:") #t:
     except getopt.GetoptError:
-        print('python mask_dem.py -m mode -t threshold')
+        print('python mask_dem.py -m mode -t dataType') #
         sys.exit(2)
     for opt, arg in opts:
         if opt == '-h':
-            print('Example usage (defaults = prompt, threshold=0.5): python mask_dem.py')
-            print('Example usage (autobatch, and threshold=0.6): python mask_dem.py -m autobatch -t 0.6')
-            print('Example usage (otsu threshold): python mask_dem.py -m prompt -t otsu')
+            print('Example usage (defaults = prompt): python mask_dem.py') #, threshold=0.5
+            print('Example usage (autobatch): python mask_dem.py -m autobatch ') #, and threshold=0.6 -t 0.6
+            print('Example usage: python mask_dem.py -m prompt') # (otsu threshold)  -t otsu
             sys.exit()
         elif opt in ("-m"):
             mode = arg
         elif opt in ("-t"):
-            threshold = arg
-            if threshold != 'otsu':
-                threshold = float(threshold)
+            model_mode = arg
+            model_mode = int(model_mode)
 
     if 'mode' not in locals():
         mode = 'prompt'
 
-    if 'threshold' not in locals():
-        threshold = 0.5
-    print(threshold)
+    if 'model_mode' not in locals():
+        model_mode = 1
+    print(model_mode)
     #====================================================
     print('.....................................')
     print('.....................................')
@@ -447,22 +543,34 @@ if __name__ == '__main__':
     print('.....................................')
     print('.....................................')
 
+    # model_mode = 1
+    #model_mode = 2
+    #model_mode = 3
+    #1=dem, 2=stdev, 3=rgb, 4=rgb+dem, 5=rgb+stdev
+
     if mode =='autobatch':
         try:
             for dem in glob('*.tif'):
-                main(dem, threshold)
+                main(dem, model_mode) #threshold,
         except:
             print("No tif files found - check inputs for 'autobatch' or use 'prompt' mode. Exiting ...")
             sys.exit(2)
     else: #'prompt' is default
-        root = Tk()
-        dems = filedialog.askopenfilenames(initialdir = "./",title = "Select file",filetypes = (("DSM/DEM geotiff file","*.tif"),("all files","*.*")))
-        root.withdraw()
-        print("%s files selected" % (len(dems)))
+
+        if model_mode<3:
+            root = Tk()
+            dems = filedialog.askopenfilenames(initialdir = "./",title = "Select file",filetypes = (("DSM/DEM geotiff file","*.tif"),("all files","*.*")))
+            root.withdraw()
+            print("%s files selected" % (len(dems)))
+        elif model_mode==3:
+            root = Tk()
+            dems = filedialog.askopenfilenames(initialdir = "./",title = "Select file",filetypes = (("RGB Ortho geotiff file","*.tif"),("all files","*.*")))
+            root.withdraw()
+            print("%s files selected" % (len(dems)))
 
         try:
             for dem in dems:
-                main(dem, threshold)
+                main(dem, model_mode) #threshold,
         except:
             print("Unspecified error. Check inputs. Exiting ...")
             sys.exit(2)
@@ -501,7 +609,7 @@ if __name__ == '__main__':
 #     rgb = root.filename
 #     root.withdraw()
 #     print("... and %s" % (rgb))
-
+#
 # #-----------------------------------
 # def mean_iou(y_true, y_pred):
 #     """
@@ -620,7 +728,7 @@ if __name__ == '__main__':
 # model.compile(optimizer = 'adam', loss = 'categorical_crossentropy', metrics = [mean_iou, dice_coef])
 #
 # model.load_weights(weights)
-#
+# #
 # model_json = model.to_json()
 # with open(weights.replace('.h5','.json'), "w") as json_file:
 #     json_file.write(model_json)
@@ -1113,159 +1221,4 @@ if __name__ == '__main__':
 #     image = tf.image.crop_to_bounding_box(image, (nw - tw) // 2, (nh - th) // 2, tw, th)
 #
 #     return image
-
-# #-----------------------------------
-# def batchnorm_act(x):
-#     """
-#     batchnorm_act(x)
-#     This function applies batch normalization to a keras model layer, `x`, then a relu activation function
-#     INPUTS:
-#         * `z` : keras model layer (should be the output of a convolution or an input layer)
-#     OPTIONAL INPUTS: None
-#     GLOBAL INPUTS: None
-#     OUTPUTS:
-#         * batch normalized and relu-activated `x`
-#     """
-#     x = tf.keras.layers.BatchNormalization()(x)
-#     return tf.keras.layers.Activation("relu")(x)
 #
-# #-----------------------------------
-# def conv_block(x, filters, kernel_size = (7,7), padding="same", strides=1):
-#     """
-#     conv_block(x, filters, kernel_size = (7,7), padding="same", strides=1)
-#     This function applies batch normalization to an input layer, then convolves with a 2D convol layer
-#     The two actions combined is called a convolutional block
-#
-#     INPUTS:
-#         * `filters`: number of filters in the convolutional block
-#         * `x`:input keras layer to be convolved by the block
-#     OPTIONAL INPUTS:
-#         * `kernel_size`=(3, 3): tuple of kernel size (x, y) - this is the size in pixels of the kernel to be convolved with the image
-#         * `padding`="same":  see tf.keras.layers.Conv2D
-#         * `strides`=1: see tf.keras.layers.Conv2D
-#     GLOBAL INPUTS: None
-#     OUTPUTS:
-#         * keras layer, output of the batch normalized convolution
-#     """
-#     conv = batchnorm_act(x)
-#     return tf.keras.layers.Conv2D(filters, kernel_size, padding=padding, strides=strides)(conv)
-#
-# #-----------------------------------
-# def bottleneck_block(x, filters, kernel_size = (7,7), padding="same", strides=1):
-#     """
-#     bottleneck_block(x, filters, kernel_size = (7,7), padding="same", strides=1)
-#
-#     This function creates a bottleneck block layer, which is the addition of a convolution block and a batch normalized/activated block
-#     INPUTS:
-#         * `filters`: number of filters in the convolutional block
-#         * `x`: input keras layer
-#     OPTIONAL INPUTS:
-#         * `kernel_size`=(3, 3): tuple of kernel size (x, y) - this is the size in pixels of the kernel to be convolved with the image
-#         * `padding`="same":  see tf.keras.layers.Conv2D
-#         * `strides`=1: see tf.keras.layers.Conv2D
-#     GLOBAL INPUTS: None
-#     OUTPUTS:
-#         * keras layer, output of the addition between convolutional and bottleneck layers
-#     """
-#     conv = tf.keras.layers.Conv2D(filters, kernel_size, padding=padding, strides=strides)(x)
-#     conv = conv_block(conv, filters, kernel_size=kernel_size, padding=padding, strides=strides)
-#
-#     bottleneck = tf.keras.layers.Conv2D(filters, kernel_size=(1, 1), padding=padding, strides=strides)(x)
-#     bottleneck = batchnorm_act(bottleneck)
-#
-#     return tf.keras.layers.Add()([conv, bottleneck])
-#
-# #-----------------------------------
-# def res_block(x, filters, kernel_size = (7,7), padding="same", strides=1):
-#     """
-#     res_block(x, filters, kernel_size = (7,7), padding="same", strides=1)
-#
-#     This function creates a residual block layer, which is the addition of a residual convolution block and a batch normalized/activated block
-#     INPUTS:
-#         * `filters`: number of filters in the convolutional block
-#         * `x`: input keras layer
-#     OPTIONAL INPUTS:
-#         * `kernel_size`=(3, 3): tuple of kernel size (x, y) - this is the size in pixels of the kernel to be convolved with the image
-#         * `padding`="same":  see tf.keras.layers.Conv2D
-#         * `strides`=1: see tf.keras.layers.Conv2D
-#     GLOBAL INPUTS: None
-#     OUTPUTS:
-#         * keras layer, output of the addition between residual convolutional and bottleneck layers
-#     """
-#     res = conv_block(x, filters, kernel_size=kernel_size, padding=padding, strides=strides)
-#     res = conv_block(res, filters, kernel_size=kernel_size, padding=padding, strides=1)
-#
-#     bottleneck = tf.keras.layers.Conv2D(filters, kernel_size=(1, 1), padding=padding, strides=strides)(x)
-#     bottleneck = batchnorm_act(bottleneck)
-#
-#     return tf.keras.layers.Add()([bottleneck, res])
-#
-# #-----------------------------------
-# def upsamp_concat_block(x, xskip):
-#     """
-#     upsamp_concat_block(x, xskip)
-#     This function takes an input layer and creates a concatenation of an upsampled version and a residual or 'skip' connection
-#     INPUTS:
-#         * `xskip`: input keras layer (skip connection)
-#         * `x`: input keras layer
-#     OPTIONAL INPUTS: None
-#     GLOBAL INPUTS: None
-#     OUTPUTS:
-#         * keras layer, output of the addition between residual convolutional and bottleneck layers
-#     """
-#     u = tf.keras.layers.UpSampling2D((2, 2))(x)
-#     return tf.keras.layers.Concatenate()([u, xskip])
-#
-# #-----------------------------------
-# def res_unet(sz, f, nclasses=1):
-#     """
-#     res_unet(sz, f, nclasses=1)
-#     This function creates a custom residual U-Net model for image segmentation
-#     INPUTS:
-#         * `sz`: [tuple] size of input image
-#         * `f`: [int] number of filters in the convolutional block
-#         * flag: [string] if 'binary', the model will expect 2D masks and uses sigmoid. If 'multiclass', the model will expect 3D masks and uses softmax
-#         * nclasses [int]: number of classes
-#     OPTIONAL INPUTS:
-#         * `kernel_size`=(3, 3): tuple of kernel size (x, y) - this is the size in pixels of the kernel to be convolved with the image
-#         * `padding`="same":  see tf.keras.layers.Conv2D
-#         * `strides`=1: see tf.keras.layers.Conv2D
-#     GLOBAL INPUTS: None
-#     OUTPUTS:
-#         * keras model
-#     """
-#     inputs = tf.keras.layers.Input(sz)
-#
-#     ## downsample
-#     e1 = bottleneck_block(inputs, f); f = int(f*2)
-#     e2 = res_block(e1, f, strides=2); f = int(f*2)
-#     e3 = res_block(e2, f, strides=2); f = int(f*2)
-#     e4 = res_block(e3, f, strides=2); f = int(f*2)
-#     _ = res_block(e4, f, strides=2)
-#
-#     ## bottleneck
-#     b0 = conv_block(_, f, strides=1)
-#     _ = conv_block(b0, f, strides=1)
-#
-#     ## upsample
-#     _ = upsamp_concat_block(_, e4)
-#     _ = res_block(_, f); f = int(f/2)
-#
-#     _ = upsamp_concat_block(_, e3)
-#     _ = res_block(_, f); f = int(f/2)
-#
-#     _ = upsamp_concat_block(_, e2)
-#     _ = res_block(_, f); f = int(f/2)
-#
-#     _ = upsamp_concat_block(_, e1)
-#     _ = res_block(_, f)
-#
-#     ## classify
-#     if nclasses==1:
-#         outputs = tf.keras.layers.Conv2D(nclasses, (1, 1), padding="same", activation="sigmoid")(_)
-#     else:
-#         outputs = tf.keras.layers.Conv2D(nclasses, (1, 1), padding="same", activation="softmax")(_)
-#
-#     #model creation
-#     model = tf.keras.models.Model(inputs=[inputs], outputs=[outputs])
-#     return model
