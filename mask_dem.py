@@ -167,7 +167,7 @@ def mask(bigtiff,profile,out_mask):
     return bigtiff
 
 #-----------------------------------
-def main(dem, model_mode): #threshold,
+def main(dem, rgb, model_mode): #threshold,
     """
     main program
     """
@@ -177,6 +177,7 @@ def main(dem, model_mode): #threshold,
     print("Working on %s" % (dem))
     tilesize = 1024 #
     verbose = True
+    thres = .25  #channel 2 (bad) threshold - deliberately <=.5
 
     if model_mode==1: #dem only
         print('DEM-only mode')
@@ -194,16 +195,13 @@ def main(dem, model_mode): #threshold,
         print('Ortho+STDEV mode')
         weights_file = 'model'+os.sep+'orthoclip_RGBstdev_3class_batch_6.h5'
 
-    do_plot=True #False #True
+    do_plot=False #True
     if do_plot:
         import matplotlib.pyplot as plt
 
     if verbose:
-        # start timer
-        if os.name=='posix': # true if linux/mac or cygwin on windows
-           start = time.time()
-        else: # windows
-           start = time.clock()
+        # # start timer
+        start = time.time()
 
     #====================================================
     with rasterio.open(dem) as src:
@@ -211,7 +209,6 @@ def main(dem, model_mode): #threshold,
 
     width = profile['width']
     height = profile['height']
-
 
     padwidth = width + (tilesize - width % tilesize)
     padheight = height + (tilesize - height % tilesize)
@@ -232,20 +229,14 @@ def main(dem, model_mode): #threshold,
     print("Started at %s" % datetime.now())
 
     try:
-        #pre-allocate large arrays to be eventually written to geotiff format files, n, out_mask and out_conf
-        #each are padded to accomodate half a window length overlap
-        # out_mask = np.zeros((padwidth+int(tilesize/2), padheight+int(tilesize/2)), dtype=np.float16)
-        # if CALC_CONF:
-        #     out_conf = np.ones((padwidth+int(tilesize/2), padheight+int(tilesize/2)), dtype=np.float32)
-        # n = np.zeros((padwidth+int(tilesize/2), padheight+int(tilesize/2)), dtype=np.uint8)
-
+        #pre-allocate large arrays to be eventually written to geotiff format files,
         out_mask = np.zeros((padwidth, padheight), dtype=np.uint8)
         if CALC_CONF:
             out_conf = np.ones((padwidth, padheight), dtype=np.float32)
         #n = np.zeros((padwidth, padheight), dtype=np.uint8)
         # i = 4096
         # j = 9216
-        i = 2048 ; j = 10240
+        # i = 2048 ; j = 10240
 
         for i in tqdm(range(0, padwidth, tilesize)):
             for j in range(0, padheight, tilesize):
@@ -253,7 +244,7 @@ def main(dem, model_mode): #threshold,
 
                 with rasterio.open(dem) as src:
                     profile = src.profile
-                    orig = src.read(window=window).squeeze()
+                    orig = src.read(window=window).squeeze() #/255.
 
                 if len(np.unique(orig))>1:
                     #print(i,j)
@@ -273,6 +264,15 @@ def main(dem, model_mode): #threshold,
                         ##scale image exponentially using n=.5
                         image = z_exp(image,n=0.5)
 
+                    if model_mode==4: #rgb + dem
+                        image = np.squeeze(orig).T
+
+                        if rgb is not None: #when adding rgb to dem or stdev
+                            with rasterio.open(rgb) as src:
+                                profile = src.profile
+                                orig = src.read(window=window).squeeze() #/255.
+                            orig = np.squeeze(orig).T
+
                     if do_plot:
                         plt.subplot(221); plt.imshow(image, cmap='gray'); plt.axis('off'); plt.colorbar(shrink=.5)
 
@@ -286,10 +286,24 @@ def main(dem, model_mode): #threshold,
                             x,y,z=image.shape
                             subset_pad = np.zeros((tilesize, tilesize,z), dtype=profile['dtype'])
                             subset_pad[:x,:y,:z] = image
+                        elif model_mode>3:
+                            x,y=image.shape
+                            subset_pad = np.zeros((tilesize, tilesize), dtype=profile['dtype'])
+                            subset_pad[:x,:y] = image
+
+                            x,y,z=orig.shape
+                            subset_pad2 = np.zeros((tilesize, tilesize,z), dtype=profile['dtype'])
+                            subset_pad2[:x,:y,:z] = orig
 
                         del image
                         image = subset_pad.copy()
                         del subset_pad
+
+                        if model_mode>3:
+                            if 'subset_pad2' in locals():
+                                del orig
+                                orig = subset_pad2.copy()#/255
+                                del subset_pad2
 
                     elif image.shape[1] < tilesize:
                         if model_mode<3:
@@ -300,11 +314,31 @@ def main(dem, model_mode): #threshold,
                             x,y,z=image.shape
                             subset_pad = np.zeros((tilesize, tilesize,z), dtype=profile['dtype'])
                             subset_pad[:x,:y,:z] = image
+                        elif model_mode>3:
+                            x,y=image.shape
+                            subset_pad = np.zeros((tilesize, tilesize), dtype=profile['dtype'])
+                            subset_pad[:x,:y] = image
+
+                            x,y,z=orig.shape
+                            subset_pad2 = np.zeros((tilesize, tilesize,z), dtype=profile['dtype'])
+                            subset_pad2[:x,:y,:z] = orig
+
                         del image
                         image = subset_pad.copy()#/255
                         del subset_pad
 
+                        if model_mode>3:
+                            if 'subset_pad2' in locals():
+                                del orig
+                                orig = subset_pad2.copy()#/255
+                                del subset_pad2
+
+                    if model_mode>3:
+                        image = np.dstack((orig[:,:,0], orig[:,:,1], orig[:,:,2], image))
+                        del orig
+
                     image = tf.expand_dims(image, 0)
+                    #print(image.shape)
                     # use model in prediction mode
                     est_label = model.predict(image , batch_size=1).squeeze()
                     image = image.numpy().squeeze()
@@ -318,19 +352,22 @@ def main(dem, model_mode): #threshold,
 
                     est_label_orig = est_label.copy()
                     est_label = np.zeros((est_label.shape[0], est_label.shape[1])) #np.argmax(est_label, -1).astype(np.uint8).T
+
+                    # if np.any(est_label_orig[:,:,2]>.05):
                     est_label[est_label_orig[:,:,0]>.5] = 1  #nodata
                     est_label[est_label_orig[:,:,1]>.5] = 1  #good
-                    est_label[est_label_orig[:,:,2]>.25] = 0  #bad
+
+                    est_label[est_label_orig[:,:,2]>thres] = 0  #bad
                     est_label[est_label>1] = 1
+                    # else:
+                    #     est_label[est_label_orig[:,:,0]>.5] = 1  #nodata
+                    #     est_label[est_label_orig[:,:,1]>.5] = 0  #good
+                    #     est_label[est_label>1] = 1
+
 
                     if do_plot:
                         plt.subplot(222); plt.imshow(est_label, cmap='bwr'); plt.axis('off'); plt.colorbar(shrink=.5)
                         plt.subplot(223); plt.imshow(image, cmap='gray'); plt.imshow(est_label, cmap='bwr', alpha=0.3); plt.axis('off'); plt.colorbar(shrink=.5)
-
-                    #confidence is computed as deviation from 0.5
-                    #conf = np.abs(est_label-0.5)/2#1-est_label
-                    #conf[est_label<.5] = est_label[est_label<.5]
-                    #conf = 1-conf
 
                     if do_plot:
                         plt.subplot(224); plt.imshow(conf, cmap='Blues'); plt.axis('off'); plt.colorbar(shrink=.5)
@@ -342,7 +379,6 @@ def main(dem, model_mode): #threshold,
                     if CALC_CONF:
                         out_conf[i:i+tilesize,j:j+tilesize] += conf.astype('float32') #fill out that portion of the big confidence raster
                         del conf
-                    #n[i:i+tilesize,j:j+tilesize] += 1
 
         #=======================================================
         ##step 4: crop, rotate arrays, divide by N, and write to memory mapped temporary file
@@ -351,27 +387,12 @@ def main(dem, model_mode): #threshold,
         out_mask = np.rot90(np.fliplr(out_mask))
         out_shape = out_mask.shape
 
-        # n = n[:width,:height]
-        # n = np.rot90(np.fliplr(n))
         out_conf = out_conf[:width,:height]
         out_conf = np.rot90(np.fliplr(out_conf))
 
-        # out_mask = np.divide(out_mask, n, out=out_mask, casting='unsafe' )
-
-        # if threshold == 'otsu':
-        #     out_mask[np.isnan(out_mask)]=0
-        #     thres = threshold_otsu(out_mask)
-        #     print("Otsu threshold: %f" % (thres))
-        # else:
-        #     thres = threshold
-
         out_mask = out_mask.astype('uint8')
         out_mask = (out_mask!=1).astype('uint8')
-        #
-        #
-        # out_mask[out_mask<0.5] = 0
-        # out_mask[out_mask<=1] = 0
-        # out_mask[out_mask>=1] = 1
+
 
         if CALC_CONF:
             # out_conf = np.divide(out_conf, np.maximum(0,n.astype('float')), out=out_conf, casting='unsafe')
@@ -393,9 +414,7 @@ def main(dem, model_mode): #threshold,
         del out_mask
         del fp
 
-
         #write out to temporary memory mapped file
-        # del n
         outfile2 = TemporaryFile()
         fp = np.memmap(outfile2, dtype='float32', mode='w+', shape=out_conf.shape)
         fp[:] = out_conf[:]
@@ -403,7 +422,7 @@ def main(dem, model_mode): #threshold,
         del out_conf
         del fp
 
-        #read back in again
+        #read back in again without using any memory
         out_conf = np.memmap(outfile2, dtype='float32', mode='r', shape=out_shape)
 
         if 'out_mask' not in locals():
@@ -491,11 +510,10 @@ def main(dem, model_mode): #threshold,
 
         if verbose:
             print("Program finished at %s" % datetime.now())
-
-            if os.name=='posix': # true if linux/mac
-               elapsed = (time.time() - start)/60
-            else: # windows
-               elapsed = (time.clock() - start)/60
+            # if os.name=='posix': # true if linux/mac
+            elapsed = (time.time() - start)/60
+            # else: # windows
+            #    elapsed = (time.clock() - start)/60
             print("Processing took "+ str(elapsed) + " minutes")
 
     except:
@@ -508,24 +526,21 @@ if __name__ == '__main__':
 
     argv = sys.argv[1:]
     try:
-        opts, args = getopt.getopt(argv,"h:m:t:") #t:
+        opts, args = getopt.getopt(argv,"h:m:") #t:
     except getopt.GetoptError:
-        print('python mask_dem.py -m mode -t dataType') #
+        print('python mask_dem.py -m model mode') #
         sys.exit(2)
     for opt, arg in opts:
         if opt == '-h':
-            print('Example usage (defaults = prompt): python mask_dem.py') #, threshold=0.5
-            print('Example usage (autobatch): python mask_dem.py -m autobatch ') #, and threshold=0.6 -t 0.6
-            print('Example usage: python mask_dem.py -m prompt') # (otsu threshold)  -t otsu
+            print('Example usage python mask_dem.py') #, threshold=0.5
+            print('Example usage python mask_dem.py -m 1 ') #, and threshold=0.6 -t 0.6
+            print('Example usage: python mask_dem.py -m 2') # (otsu threshold)  -t otsu
             sys.exit()
+        # elif opt in ("-m"):
+        #     mode = arg
         elif opt in ("-m"):
-            mode = arg
-        elif opt in ("-t"):
             model_mode = arg
             model_mode = int(model_mode)
-
-    if 'mode' not in locals():
-        mode = 'prompt'
 
     if 'model_mode' not in locals():
         model_mode = 1
@@ -548,33 +563,48 @@ if __name__ == '__main__':
     #model_mode = 3
     #1=dem, 2=stdev, 3=rgb, 4=rgb+dem, 5=rgb+stdev
 
-    if mode =='autobatch':
-        try:
-            for dem in glob('*.tif'):
-                main(dem, model_mode) #threshold,
-        except:
-            print("No tif files found - check inputs for 'autobatch' or use 'prompt' mode. Exiting ...")
-            sys.exit(2)
-    else: #'prompt' is default
+    if model_mode<3:
+        root = Tk()
+        dems = filedialog.askopenfilenames(initialdir = "./",title = "Select DEM file",filetypes = (("DSM/DEM geotiff file","*.tif"),("all files","*.*")))
+        root.withdraw()
+        print("%s files selected" % (len(dems)))
+        rgbs = [None for k in dems]
+    elif model_mode==3:
+        root = Tk()
+        dems = filedialog.askopenfilenames(initialdir = "./",title = "Select Orthomosaic file",filetypes = (("RGB Ortho geotiff file","*.tif"),("all files","*.*")))
+        root.withdraw()
+        print("%s files selected" % (len(dems)))
+        rgbs = [None for k in dems]
+    elif model_mode>3:
+        root = Tk()
+        rgbs = filedialog.askopenfilenames(initialdir = "./",title = "Select Orthomosaic file",filetypes = (("RGB Ortho geotiff file","*.tif"),("all files","*.*")))
+        root.withdraw()
+        print("%s files selected" % (len(rgbs)))
+        rgbs = sorted(rgbs)
 
-        if model_mode<3:
-            root = Tk()
-            dems = filedialog.askopenfilenames(initialdir = "./",title = "Select file",filetypes = (("DSM/DEM geotiff file","*.tif"),("all files","*.*")))
-            root.withdraw()
-            print("%s files selected" % (len(dems)))
-        elif model_mode==3:
-            root = Tk()
-            dems = filedialog.askopenfilenames(initialdir = "./",title = "Select file",filetypes = (("RGB Ortho geotiff file","*.tif"),("all files","*.*")))
-            root.withdraw()
-            print("%s files selected" % (len(dems)))
+        root = Tk()
+        dems = filedialog.askopenfilenames(initialdir = "./",title = "Select corresponding DEM file",filetypes = (("DSM/DEM geotiff file","*.tif"),("all files","*.*")))
+        root.withdraw()
+        print("%s files selected" % (len(dems)))
+        dems = sorted(dems)
 
-        try:
-            for dem in dems:
-                main(dem, model_mode) #threshold,
-        except:
-            print("Unspecified error. Check inputs. Exiting ...")
-            sys.exit(2)
+    try:
+        for dem,rgb in zip(dems,rgbs):
+            main(dem, rgb, model_mode) #threshold,
+    except:
+        print("Unspecified error. Check inputs. Exiting ...")
+        sys.exit(2)
 
+
+
+    # if mode =='autobatch':
+    #     try:
+    #         for dem in glob('*.tif'):
+    #             main(dem, None, model_mode) #threshold,
+    #     except:
+    #         print("No tif files found - check inputs for 'autobatch' or use 'prompt' mode. Exiting ...")
+    #         sys.exit(2)
+    # else: #'prompt' is default
 
                 #orig = orig.squeeze()
                     #image = image/255
