@@ -7,7 +7,7 @@ Input: DEM raster in COG (cloud-optimized geotiff) format. This DEM has messy no
 Outputs:
 1) a noise-free DEM
 2) the mask used to create the noise-free DEM (1=no noise, 0=noise)
-3) a confidence metric for each prediction in the mask (0.5 = uncertain, 1.0 = certain)
+3) a confidence metric for each prediction in the mask (0.0 = uncertain, 0.5 = certain)
 
 
 ## How it works
@@ -16,13 +16,13 @@ The program uses a deep neural network trained to identify noise in DEMs, to ide
 
 1. The user selects a DEM in geotiff format (including COG).
 
-2. The DEM raster is indexed into 1024x1024 pixel windows with 50% overlap. Overlap results in over-sampling the DEM with the model and averaging provides stability and confidence in outputs
+2. The DEM raster is indexed into 1024x1024 pixel windows
 
 3. For each pixel in each window, the model estimates 'good' data as a probability score. Scores close to zero indicate 'bad' data (noise). Scores close to one indicate 'good' (noise-free)
 
-4. With 50% overlap, each pixel in the input DEM is sampled up to 4 times (twice in each direction), so the aggregated probabilities of 'good' data (model outputs from step 3 above) are averaged by the number of times each pixel was sampled by the model
+4. Each band of the model output stack (one-hot encoded output probabilities) is median filtered to remove edge artifacts and spatially filter confidence estimates
 
-5. The confidence of each model prediction is the distance from 0.5 (the uncertainty threshold). With overlap, confidences are aggregated and divided by the number of samples to provide an average confidence
+5. The confidence of each model prediction is the standard deviation of values in the output stack (one-hot encoded output probabilities)
 
 
 ## Install the conda env
@@ -44,39 +44,9 @@ python mask_dem.py
 
 The program will ask you to select one or more DEM(s) in geotiff format
 
-The above is equivalent to
-
-```
-python mask_dem.py -m prompt
-```
-
-using the `-m` or mode flag for `prompt` mode. An alternative is
-
-```
-python mask_dem.py -m autobatch
-```
-
-which tells the program to analyze all the .tif files in the root directory.
-
-Optionally, use the `-t` flag if you'd like to use the Otsu threshold instead of a hard threshold of 0.5 to separate good from bad data, e.g.
-
-```
-python mask_dem.py -t otsu
-```
-
-or another hard threshold
-
-```
-python mask_dem.py -m autobatch -t 0.6
-```
-
-```
-python mask_dem.py -m autobatch -t 0.4
-```
-
 
 What it does:
-1. Chops the dem into 1024x1024 px chunks, computes the stdev raster using a 3x3 kernel, scales it empirically
+1. Chops the dem into 1024x1024 px chunks
 2. For each chunk, the model reads in the dem, and the model makes a prediction
 3. The prediction is thresholded to make a mask, and a confidence is also computed
 4. The masks and confidence chunks are compiled into mask and confidence rasters the same size as the input dem
@@ -84,7 +54,7 @@ What it does:
 6. The mask raster is written to file
 7. The confidence raster is written to file
 
-It can take several minutes for this process to complete, and very large rasters require large amounts of RAM (> 16GB or more)
+It can take several minutes for this process to complete, and very large rasters require large amounts of RAM
 
 Options (hard-coded into `mask_dem.py`)
 
@@ -103,10 +73,11 @@ If `True`, a confidence raster will be computed
 
 * `download_test_images.py`: a script to download example data to use with the model if you have no data of your own
 * `mask_dem.py`: the main script that does the DEM masking
-* `model/orthoclip_stdevonly_2class_batch_6.json`: the model in human-readable format, consisting of a series of instructions in tensorflow/keras
-* `model/orthoclip_stdevonly_2class_batch_6.h5`: the model trained weights
+* `model/orthoclip_demonly_3class_batch_6.json`: the model in human-readable format, consisting of a series of instructions in tensorflow/keras
+* `model/orthoclip_demonly_3class_batch_6.h5`: the model trained weights
 * `install/auto_dem_masker.yml`: a yml file that contains instructions for creating a conda environment that installs all the required dependencies
-
+* segmentation zoo config files
+* `chunk_dems.py`:the script to use to create model training data for use with segmentation zoo
 
 ## Updates
 
@@ -129,19 +100,12 @@ If `True`, a confidence raster will be computed
 * command line flags either 'autobatch' for 'auto batch processing mode' that analyzes every .tif file in the present directory, or 'prompt' (default) tot select files one by one with a file browser dialog window
 * now can select multiple tifs and batch process them
 * otsu threshold
-* tested on 15 DEMs each < 257 MB. Good outputs for:
-  * 20181007_Hattaras_Inlet_to_Ocracoke_Inlet_1m_DSM_adjExt_cog.tif
-  * 20181006_VA_to_Oregon_Inlet_1m_DSM_adjExt_cog.tif
-  * clip_20181006_Ophelia_Inlet_to_Beaufort_Inlet_1m_UTM18N_NAVD88_cog.tif
-  * clip_20181007_Hatteras_Inlet_to_Ocracoke_Inlet_1m_UTM18N_NAVD88_cog.tif
-  * clip_20181007_Oregon_Inlet_to_Hatteras_Inlet_1m_UTM18N_NAVD88_cog.tif
-  * clip_20181008_Hatteras_Inlet_to_Ocracoke_Inlet_1m_UTM18N_NAVD88_cog.tif
-  * clip_20181008_VA_to_Oregon_Inlet_1m_UTM18N_NAVD88_cog.tif
-  * clip_20181007_Ophelia_Inlet_to_Beaufort_Inlet_1m_UTM18N_NAVD88_cog.tif
-  * clip_20181007_Ocracoke_Inlet_to_Ophelia_Inlet_1m_UTM18N_NAVD88_cog.tif
-  * clip_20181007_Bogue_Inlet_to_New_River_Inlet_1m_UTM18N_NAVD88_cog.tif
-  * clip_20181007_Beaufort_Inlet_to_Bogue_Inlet_1m_UTM18N_NAVD88_cog.tif
-  * clip_20181006_VA_to_Oregon_Inlet_1m_UTM18N_NAVD88_cog.tif
-  * clip_20181006_Ophelia_Inlet_to_Beaufort_Inlet_1m_UTM18N_NAVD88_cog.tif
-  * clip_20181006_Ocracoke_Inlet_to_Ophelia_Inlet_1m_UTM18N_NAVD88_cog.tif
-  * clip_20181006_Hatteras_Inlet_to_Ocracoke_Inlet_1m_UTM18N_NAVD88_cog.tif
+
+### 3/25/21: DB
+* switched whole codebase from overlap to no overlap. Now seams are removed by smoothing, not oversampling
+* switched from 2-class (good and bad/no data), now have 3 classes (good, bad, and no data). The goal is to isolate the 'good data' in a mask 
+* removed autobatch mode therefore no need to specify mode at cl
+* usr flag is now model type. None work except the default (dem only, m=1)
+* some other minor improvements to mask_dem.py, added 'make_models.py', added segmentation zoo config files and 'chunk_dems.py' which is the script to use to create model training data for use with segmentation zoo
+* adapted and test on 1, 3, and 4-band inputs/models, however currently all models except dem-only give bad predictions
+* 3-class now so removed Otsu threshold
