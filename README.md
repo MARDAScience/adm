@@ -8,6 +8,8 @@ Initial version did not use overlap, not Otsu. Implemented a median filter with 
 
 > version 2 - August 2nd, 2021
 
+Optional overlap, Otsu threshold, median filter. Improved implementation. 
+
 
 Input: DEM raster in COG (cloud-optimized geotiff) format. This DEM has messy noise you wish to automatically identify and clean.
 
@@ -29,7 +31,6 @@ The program uses a deep neural network trained to identify noise in DEMs, to ide
 
 4. Each band of the model output stack (one-hot encoded output probabilities) is median filtered to remove edge artifacts and spatially filter confidence estimates
 
-5. The confidence of each model prediction is the standard deviation of values in the output stack (one-hot encoded output probabilities)
 
 
 ## Install the conda env
@@ -59,7 +60,6 @@ What it does:
 4. The masks and confidence chunks are compiled into mask and confidence rasters the same size as the input dem
 5. The mask raster is used to mask the dem and the masked dem is written to file
 6. The mask raster is written to file
-7. The confidence raster is written to file
 
 It can take several minutes for this process to complete, and very large rasters require large amounts of RAM
 
