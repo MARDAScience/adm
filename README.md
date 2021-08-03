@@ -2,6 +2,13 @@
 
 Written by Daniel Buscombe (USGS-PCMSC and Marda Science LLC) and Andy Ritchie (USGS-PCMSC)
 
+> version 1 - April 19, 2021
+
+Initial version did not use overlap, not Otsu. Implemented a median filter with large radus (21 px) by default.
+
+> version 2 - August 2nd, 2021
+
+
 Input: DEM raster in COG (cloud-optimized geotiff) format. This DEM has messy noise you wish to automatically identify and clean.
 
 Outputs:
@@ -63,11 +70,6 @@ USE_GPU = True
 ```
 if `False`, CPU is used for inference
 
-```
-CALC_CONF = False
-```
-
-If `True`, a confidence raster will be computed
 
 ## Contents of this repository
 
@@ -109,3 +111,11 @@ If `True`, a confidence raster will be computed
 * some other minor improvements to mask_dem.py, added 'make_models.py', added segmentation zoo config files and 'chunk_dems.py' which is the script to use to create model training data for use with segmentation zoo
 * adapted and test on 1, 3, and 4-band inputs/models, however currently all models except dem-only give bad predictions
 * 3-class now so removed Otsu threshold
+
+### 8/2/21: AR + DB
+* back to overlap, but a different more efficent implementation
+* have temporarily removed the confidence raster
+* added switches to control threshold behaviour (o.5 or otsu)
+* added switch for median filter (defailt - no median filter)
+* tested with 25% overlap, no otsu, no median filter = worked well on Florence data
+* 1=good data, 0=no/bad data

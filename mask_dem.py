@@ -140,36 +140,45 @@ def mask(bigtiff,profile,out_mask):
     """
     if profile['count']==4:
         bigtiff1 = bigtiff[0,:,:]
-        bigtiff1[out_mask==0] = profile['nodata']
+        bigtiff1[out_mask==1] = profile['nodata']
         bigtiff[0,:,:] = bigtiff1
         del bigtiff1
 
         bigtiff2 = bigtiff[1,:,:]
-        bigtiff2[out_mask==0] = profile['nodata']
+        bigtiff2[out_mask==1] = profile['nodata']
         bigtiff[1,:,:] = bigtiff2
         del bigtiff2
 
         bigtiff3 = bigtiff[2,:,:]
-        bigtiff3[out_mask==0] = profile['nodata']
+        bigtiff3[out_mask==1] = profile['nodata']
         bigtiff[2,:,:] = bigtiff3
         del bigtiff3
 
         bigtiff4 = bigtiff[3,:,:]
-        bigtiff4[out_mask==0] = profile['nodata']
+        bigtiff4[out_mask==1] = profile['nodata']
         bigtiff[3,:,:] = bigtiff4
         del bigtiff4
     else:
         bigtiff1 = bigtiff[0,:,:]
-        bigtiff1[out_mask==0] = profile['nodata']
+        bigtiff1[out_mask==1] = profile['nodata']
         bigtiff[0,:,:] = bigtiff1
         del bigtiff1
 
     return bigtiff
 
 #-----------------------------------
-def main(dem, rgb, model_mode): #threshold,
+def main(dem, rgb, model_mode, overlap, medfilt_radius, use_otsu): 
     """
     main program
+	-o is percentage overlap between tiles (0 for no overlap, 25 for 25% overlap, etc)
+	-f is an integer >0 for median filtering. Refers to radius of smoothing kernel. Default = no median filter (0)
+	-t is 0 for "no, dont use Otsu - use a threshold of 0.5' and 1 for "yes please, use Otsu"
+	 
+	Defaults:
+	-m  = 1 (dem only - the other model modes are not implemented)
+	-o = 25 (percentage overlap)
+	-f = 0 (median filter radius)
+	-t = 0 (dont use otsu, use threshold=0.5)
     """
     print('.....................................')
     print('.....................................')
@@ -231,15 +240,25 @@ def main(dem, rgb, model_mode): #threshold,
     try:
         #pre-allocate large arrays to be eventually written to geotiff format files,
         out_mask = np.zeros((padwidth, padheight), dtype=np.uint8)
+        accumulator = np.zeros((padwidth, padheight), dtype=np.uint8)
+		
         if CALC_CONF:
             out_conf = np.ones((padwidth, padheight), dtype=np.float32)
         #n = np.zeros((padwidth, padheight), dtype=np.uint8)
-        # i = 4096
-        # j = 9216
-        # i = 2048 ; j = 10240
+        #i = 2048; j=20480
 
-        for i in tqdm(range(0, padwidth, tilesize)):
-            for j in range(0, padheight, tilesize):
+        # i=0; j=26880
+
+        # counter=0
+        # prc_overlap = 25 #100
+        prc_overlap = overlap/100
+        increment = int((1-prc_overlap)*tilesize)
+        if prc_overlap<.25:
+            increment = tilesize
+        print("Using overlap of %i pixels" % (increment))			
+		
+        for i in tqdm(range(0, padwidth, increment)):
+            for j in range(0, padheight, increment):
                 window = rasterio.windows.Window(i,j,tilesize, tilesize)
 
                 with rasterio.open(dem) as src:
@@ -248,6 +267,7 @@ def main(dem, rgb, model_mode): #threshold,
 
                 if len(np.unique(orig))>1:
                     #print(i,j)
+					
                     orig[orig==profile['nodata']] = 0
 
                     # if do_plot:
@@ -276,6 +296,7 @@ def main(dem, rgb, model_mode): #threshold,
                     if do_plot:
                         plt.subplot(221); plt.imshow(image, cmap='gray'); plt.axis('off'); plt.colorbar(shrink=.5)
 
+                    do_pad = 0
                     if image.shape[0] < tilesize:
 
                         if model_mode<3:
@@ -298,10 +319,11 @@ def main(dem, rgb, model_mode): #threshold,
                         del image
                         image = subset_pad.copy()
                         del subset_pad
+                        do_pad = 1						
 
                         if model_mode>3:
                             if 'subset_pad2' in locals():
-                                del orig
+                                #del orig
                                 orig = subset_pad2.copy()#/255
                                 del subset_pad2
 
@@ -322,6 +344,7 @@ def main(dem, rgb, model_mode): #threshold,
                             x,y,z=orig.shape
                             subset_pad2 = np.zeros((tilesize, tilesize,z), dtype=profile['dtype'])
                             subset_pad2[:x,:y,:z] = orig
+                        do_pad = 1						
 
                         del image
                         image = subset_pad.copy()#/255
@@ -329,13 +352,13 @@ def main(dem, rgb, model_mode): #threshold,
 
                         if model_mode>3:
                             if 'subset_pad2' in locals():
-                                del orig
+                                #del orig
                                 orig = subset_pad2.copy()#/255
                                 del subset_pad2
 
                     if model_mode>3:
                         image = np.dstack((orig[:,:,0], orig[:,:,1], orig[:,:,2], image))
-                        del orig
+                        #del orig
 
                     image = tf.expand_dims(image, 0)
                     #print(image.shape)
@@ -343,7 +366,8 @@ def main(dem, rgb, model_mode): #threshold,
                     est_label = model.predict(image , batch_size=1).squeeze()
                     image = image.numpy().squeeze()
 
-                    est_label = medianfiltmask(est_label, radius=21)/255.
+                    if medfilt_radius>0:
+                        est_label = medianfiltmask(est_label, radius=medfilt_radius)/255.
 
                     conf = np.std(est_label, -1)
 
@@ -353,16 +377,25 @@ def main(dem, rgb, model_mode): #threshold,
                     est_label_orig = est_label.copy()
                     est_label = np.zeros((est_label.shape[0], est_label.shape[1])) #np.argmax(est_label, -1).astype(np.uint8).T
 
-                    # if np.any(est_label_orig[:,:,2]>.05):
-                    est_label[est_label_orig[:,:,0]>.5] = 1  #nodata
-                    est_label[est_label_orig[:,:,1]>.5] = 1  #good
+                    if use_otsu: 
+                       otsu_nodata = threshold_otsu(est_label_orig[:,:,0])
+                       otsu_baddata = threshold_otsu(est_label_orig[:,:,1])
+                       otsu_gooddata = threshold_otsu(est_label_orig[:,:,2])
+					   
+                       est_label[est_label_orig[:,:,0]>otsu_nodata] = 0  #nodata
+                       est_label[est_label_orig[:,:,1]>otsu_baddata] = 0  #bad
 
-                    est_label[est_label_orig[:,:,2]>thres] = 0  #bad
-                    est_label[est_label>1] = 1
-                    # else:
-                    #     est_label[est_label_orig[:,:,0]>.5] = 1  #nodata
-                    #     est_label[est_label_orig[:,:,1]>.5] = 0  #good
-                    #     est_label[est_label>1] = 1
+                       est_label[est_label_orig[:,:,2]>otsu_gooddata] = 1  #good
+                       est_label[est_label>1] = 1
+					
+                    else:
+                       # if np.any(est_label_orig[:,:,2]>.05):
+                       est_label[est_label_orig[:,:,0]>0.5] = 0  #nodata
+                       est_label[est_label_orig[:,:,1]>0.5] = 0  #bad
+
+                       est_label[est_label_orig[:,:,2]>0.5] = 1  #good
+                       est_label[est_label>1] = 1
+
 
 
                     if do_plot:
@@ -374,38 +407,61 @@ def main(dem, rgb, model_mode): #threshold,
                         plt.savefig('aom_ex'+str(i)+'_'+str(j)+'.png', dpi=300); plt.close()
 
                     #fill out big rasters
-                    out_mask[i:i+tilesize,j:j+tilesize] += est_label.astype('uint8') #fill in that portion of big mask
-                    del est_label
-                    if CALC_CONF:
-                        out_conf[i:i+tilesize,j:j+tilesize] += conf.astype('float32') #fill out that portion of the big confidence raster
-                        del conf
+                    if do_pad==1:
+                        tilesize_j, tilesize_i = orig.shape
+                        out_mask[i:i+tilesize_i,j:j+tilesize_j] += est_label[:tilesize_i,:tilesize_j].astype('uint8') #fill in that portion of big mask					
+                    else:
+                        out_mask[i:i+tilesize,j:j+tilesize] += est_label.astype('uint8') #fill in that portion of big mask
+					
+                    #fill out big rasters
+                    if do_pad==1:
+                        tilesize_j, tilesize_i = orig.shape
+                        accumulator[i:i+tilesize_i,j:j+tilesize_j] += np.ones((tilesize_i,tilesize_j)).astype('uint8') #fill in that portion of accumulator
+                    else:
+                        accumulator[i:i+tilesize,j:j+tilesize] += np.ones((tilesize,tilesize)).astype('uint8') #fill in that portion of accumulator
+										
+
+                    del est_label, orig
+
 
         #=======================================================
         ##step 4: crop, rotate arrays, divide by N, and write to memory mapped temporary file
         #(i know, classy)
+				
         out_mask = out_mask[:width,:height]
+        accumulator = accumulator[:width,:height]
+		
+        if overlap>0:
+           out_mask2 = out_mask.copy()		
+           out_mask2 = out_mask2/accumulator
+           out_mask2[np.isnan(out_mask2)] = 0	
+           out_mask2[np.isinf(out_mask2)] = 0	
+           out_mask2[out_mask2>0] = 1
+           out_mask2 = out_mask2.astype('uint8')
+           out_mask = out_mask2.copy()
+		
         out_mask = np.rot90(np.fliplr(out_mask))
         out_shape = out_mask.shape
 
-        out_conf = out_conf[:width,:height]
-        out_conf = np.rot90(np.fliplr(out_conf))
+        # out_conf = out_conf[:width,:height]
+        # out_conf = np.rot90(np.fliplr(out_conf))
 
         out_mask = out_mask.astype('uint8')
         out_mask = (out_mask!=1).astype('uint8')
 
 
-        if CALC_CONF:
-            # out_conf = np.divide(out_conf, np.maximum(0,n.astype('float')), out=out_conf, casting='unsafe')
-            out_conf[out_conf==np.nan]=0
-            out_conf[out_conf==np.inf]=0
-            out_conf[out_conf<=0] = 0
-            out_conf = out_conf-1
-            #out_conf[out_conf>.5] = 0
-            # out_conf[out_conf==-1] = 0
-            #out_mask = np.memmap(outfile, dtype='uint8', mode='r', shape=out_shape)
-            out_conf[out_mask==0] = 0
+        # if CALC_CONF:
+            # # out_conf = np.divide(out_conf, np.maximum(0,n.astype('float')), out=out_conf, casting='unsafe')
+            # out_conf[out_conf==np.nan]=0
+            # out_conf[out_conf==np.inf]=0
+            # out_conf[out_conf<=0] = 0
+            # out_conf = out_conf-1
+            # #out_conf[out_conf>.5] = 0
+            # # out_conf[out_conf==-1] = 0
+            # #out_mask = np.memmap(outfile, dtype='uint8', mode='r', shape=out_shape)
+            # out_conf[out_mask==0] = 0
 
-        # out_mask[out_conf<.25] = 0
+        # # out_mask[out_conf<.25] = 0
 
         outfile = TemporaryFile()
         fp = np.memmap(outfile, dtype='uint8', mode='w+', shape=out_mask.shape)
@@ -414,16 +470,16 @@ def main(dem, rgb, model_mode): #threshold,
         del out_mask
         del fp
 
-        #write out to temporary memory mapped file
-        outfile2 = TemporaryFile()
-        fp = np.memmap(outfile2, dtype='float32', mode='w+', shape=out_conf.shape)
-        fp[:] = out_conf[:]
-        fp.flush()
-        del out_conf
-        del fp
+        # #write out to temporary memory mapped file
+        # outfile2 = TemporaryFile()
+        # fp = np.memmap(outfile2, dtype='float32', mode='w+', shape=out_conf.shape)
+        # fp[:] = out_conf[:]
+        # fp.flush()
+        # del out_conf
+        # del fp
 
-        #read back in again without using any memory
-        out_conf = np.memmap(outfile2, dtype='float32', mode='r', shape=out_shape)
+        # #read back in again without using any memory
+        # out_conf = np.memmap(outfile2, dtype='float32', mode='r', shape=out_shape)
 
         if 'out_mask' not in locals():
             out_mask = np.memmap(outfile, dtype='uint8', mode='r', shape=out_shape)
@@ -433,30 +489,30 @@ def main(dem, rgb, model_mode): #threshold,
     except:
         print("Error occurred with creating mask for file %s" % (dem))
 
-    try:
-        # get the profile of the geotif which contains info we need to write out rasters with the same CRS, dtype, etc
-        with rasterio.open(dem) as src: #rgb
-            profile = src.profile
+    # try:
+        # # get the profile of the geotif which contains info we need to write out rasters with the same CRS, dtype, etc
+        # with rasterio.open(dem) as src: #rgb
+            # profile = src.profile
 
-        #=============================
-        ##conf
-        if CALC_CONF:
-            if verbose:
-                print('.....................................')
-                print('Writing out mask confidence raster ...')
-                print(datetime.now())
+        # #=============================
+        # ##conf
+        # if CALC_CONF:
+            # if verbose:
+                # print('.....................................')
+                # print('Writing out mask confidence raster ...')
+                # print(datetime.now())
 
-            profile['dtype'] = 'float32'
-            profile['nodata'] = 0.0
-            profile['count'] = 1
+            # profile['dtype'] = 'float32'
+            # profile['nodata'] = 0.0
+            # profile['count'] = 1
 
-            with rasterio.Env():
-                with rasterio.open(dem.replace('.tif','_automask_conf.tif'), 'w', **profile) as dst:
-                    dst.write(np.expand_dims(out_conf.astype('float32'),0))
-            del out_conf
+            # with rasterio.Env():
+                # with rasterio.open(dem.replace('.tif','_automask_conf.tif'), 'w', **profile) as dst:
+                    # dst.write(np.expand_dims(out_conf.astype('float32'),0))
+            # del out_conf
 
-    except:
-        print("Error occurred with creating masked confidence file for %s" % (dem))
+    # except:
+        # print("Error occurred with creating masked confidence file for %s" % (dem))
 
     try:
         #=============================
@@ -526,25 +582,55 @@ if __name__ == '__main__':
 
     argv = sys.argv[1:]
     try:
-        opts, args = getopt.getopt(argv,"h:m:") #t:
+        opts, args = getopt.getopt(argv,"h:m:o:f:t:")
     except getopt.GetoptError:
-        print('python mask_dem.py -m model mode') #
+        print('python mask_dem.py -m model mode -o overlap percentage -f median filter radius -t otsu threshold \n')
+        print('Defaults:\n')
+        print('-m  = 1 (dem only - the other model modes are not implemented)\n')
+        print('-o = 25 (percentage overlap)\n')
+        print('-f = 0 (median filter radius)\n')
+        print('-t​​​​​​​ = 0 (Not otsu)\n')
         sys.exit(2)
     for opt, arg in opts:
         if opt == '-h':
-            print('Example usage python mask_dem.py') #, threshold=0.5
-            print('Example usage python mask_dem.py -m 1 ') #, and threshold=0.6 -t 0.6
-            print('Example usage: python mask_dem.py -m 2') # (otsu threshold)  -t otsu
+            print('Example usage python mask_dem.py') 
+            print('Example usage python mask_dem.py -m 1 -o 25 -f 5 -t 1') 
+            print('Example usage: python mask_dem.py -m 2 -o 10 -f 10 -t 0') 
             sys.exit()
-        # elif opt in ("-m"):
-        #     mode = arg
+
         elif opt in ("-m"):
             model_mode = arg
             model_mode = int(model_mode)
-
+        elif opt in ("-o"):
+            overlap = arg
+            overlap = int(overlap)
+        elif opt in ("-f"):
+            medfilt_radius = arg
+            medfilt_radius = int(medfilt_radius)
+        elif opt in ("-t"):
+            use_otsu = arg
+            use_otsu = int(use_otsu)
+			
     if 'model_mode' not in locals():
         model_mode = 1
     print(model_mode)
+	
+    if 'overlap' not in locals():
+        overlap = 25 #25% overlap
+    print(overlap)	
+
+    if 'medfilt_radius' not in locals():
+        medfilt_radius = 0
+	
+    print(medfilt_radius)
+	
+    if 'use_otsu' not in locals():
+        use_otsu = False
+    elif type(use_otsu) is int:
+        use_otsu = bool(use_otsu)
+    print(use_otsu)	
+	
+	
     #====================================================
     print('.....................................')
     print('.....................................')
@@ -590,10 +676,14 @@ if __name__ == '__main__':
 
     try:
         for dem,rgb in zip(dems,rgbs):
-            main(dem, rgb, model_mode) #threshold,
+            main(dem, rgb, model_mode, overlap, medfilt_radius, use_otsu) 
     except:
         print("Unspecified error. Check inputs. Exiting ...")
         sys.exit(2)
+
+
+	# dem = r'F:/dbuscombe_github/adm/data/clip_20181006_Ophelia_Inlet_to_Beaufort_Inlet_1m_UTM18N_NAVD88_cog.tif'
+	# dem = os.path.normpath(dem)
 
 
 
