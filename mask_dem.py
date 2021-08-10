@@ -79,6 +79,7 @@ print("Num GPUs Available: ", len(tf.config.experimental.list_physical_devices('
 #    M = np.max(dat.flatten())
 #    return (mx-mn)*(dat-m)/(M-m)+mn
 
+
 #-----------------------------------
 def std_convoluted(image, N):
     """
@@ -186,7 +187,7 @@ def main(dem, rgb, model_mode, overlap, medfilt_radius, use_otsu):
     print("Working on %s" % (dem))
     tilesize = 1024 #
     verbose = True
-    thres = .25  #channel 2 (bad) threshold - deliberately <=.5
+    # thres = .25  #channel 2 (bad) threshold - deliberately <=.5
 
     if model_mode==1: #dem only
         print('DEM-only mode')
@@ -204,6 +205,17 @@ def main(dem, rgb, model_mode, overlap, medfilt_radius, use_otsu):
         print('Ortho+STDEV mode')
         weights_file = 'model'+os.sep+'orthoclip_RGBstdev_3class_batch_6.h5'
 
+
+    try:
+        os.remove(dem.replace('.tif','_automask.tif'))
+    except:
+        pass
+		
+    try:
+        os.remove(dem.replace('.tif','_automasked_dem.tif'))
+    except:
+        pass
+			
     do_plot=False #True
     if do_plot:
         import matplotlib.pyplot as plt
@@ -242,20 +254,23 @@ def main(dem, rgb, model_mode, overlap, medfilt_radius, use_otsu):
         out_mask = np.zeros((padwidth, padheight), dtype=np.uint8)
         accumulator = np.zeros((padwidth, padheight), dtype=np.uint8)
 		
-        if CALC_CONF:
-            out_conf = np.ones((padwidth, padheight), dtype=np.float32)
-        #n = np.zeros((padwidth, padheight), dtype=np.uint8)
-        #i = 2048; j=20480
-
-        # i=0; j=26880
+        # if CALC_CONF:
+            # out_conf = np.ones((padwidth, padheight), dtype=np.float32)
 
         # counter=0
         # prc_overlap = 25 #100
         prc_overlap = overlap/100
         increment = int((1-prc_overlap)*tilesize)
-        if prc_overlap<.25:
-            increment = tilesize
-        print("Using overlap of %i pixels" % (increment))			
+        # if prc_overlap<.25:
+            # increment = tilesize
+        # print("Using overlap of %i pixels" % (increment))			
+		
+        tilesize=1024
+        # window1d = np.abs(np.hanning(tilesize/2))
+        # window2d = np.sqrt(np.outer(window1d,window1d))
+		
+        # window2d_up = np.roll(window2d,int(tilesize/4),axis=1)
+        # window2d_up[:,:int(tilesize/4)] = 0
 		
         for i in tqdm(range(0, padwidth, increment)):
             for j in range(0, padheight, increment):
@@ -366,8 +381,6 @@ def main(dem, rgb, model_mode, overlap, medfilt_radius, use_otsu):
                     est_label = model.predict(image , batch_size=1).squeeze()
                     image = image.numpy().squeeze()
 
-                    if medfilt_radius>0:
-                        est_label = medianfiltmask(est_label, radius=medfilt_radius)/255.
 
                     conf = np.std(est_label, -1)
 
@@ -395,8 +408,6 @@ def main(dem, rgb, model_mode, overlap, medfilt_radius, use_otsu):
 
                        est_label[est_label_orig[:,:,2]>0.5] = 1  #good
                        est_label[est_label>1] = 1
-
-
 
                     if do_plot:
                         plt.subplot(222); plt.imshow(est_label, cmap='bwr'); plt.axis('off'); plt.colorbar(shrink=.5)
@@ -431,14 +442,14 @@ def main(dem, rgb, model_mode, overlap, medfilt_radius, use_otsu):
         out_mask = out_mask[:width,:height]
         accumulator = accumulator[:width,:height]
 		
-        if overlap>0:
-           out_mask2 = out_mask.copy()		
-           out_mask2 = out_mask2/accumulator
-           out_mask2[np.isnan(out_mask2)] = 0	
-           out_mask2[np.isinf(out_mask2)] = 0	
-           out_mask2[out_mask2>0] = 1
-           out_mask2 = out_mask2.astype('uint8')
-           out_mask = out_mask2.copy()
+        accumulator[accumulator<1] = 1		
+        out_mask2 = out_mask.copy()		
+        out_mask2 = out_mask2/accumulator
+        out_mask2[np.isnan(out_mask2)] = 0	
+        out_mask2[np.isinf(out_mask2)] = 0	
+        out_mask2[out_mask2>0] = 1
+        out_mask2 = out_mask2.astype('uint8')
+        out_mask = out_mask2.copy()
 		
         out_mask = np.rot90(np.fliplr(out_mask))
         out_shape = out_mask.shape
@@ -448,7 +459,9 @@ def main(dem, rgb, model_mode, overlap, medfilt_radius, use_otsu):
 
         out_mask = out_mask.astype('uint8')
         out_mask = (out_mask!=1).astype('uint8')
-
+		
+        if medfilt_radius>0:
+           out_mask = median(out_mask,disk(medfilt_radius))
 
         # if CALC_CONF:
             # # out_conf = np.divide(out_conf, np.maximum(0,n.astype('float')), out=out_conf, casting='unsafe')
@@ -527,7 +540,7 @@ def main(dem, rgb, model_mode, overlap, medfilt_radius, use_otsu):
             bigtiff = src.read()
 
         bigtiff = mask(bigtiff,profile,out_mask)
-
+			
         with rasterio.Env():
             with rasterio.open(dem.replace('.tif','_automasked_dem.tif'), 'w', **profile) as dst:
                 dst.write(bigtiff)
@@ -587,7 +600,7 @@ if __name__ == '__main__':
         print('python mask_dem.py -m model mode -o overlap percentage -f median filter radius -t otsu threshold \n')
         print('Defaults:\n')
         print('-m  = 1 (dem only - the other model modes are not implemented)\n')
-        print('-o = 25 (percentage overlap)\n')
+        print('-o = 25 (percentage overlap between 5 and 95)\n')
         print('-f = 0 (median filter radius)\n')
         print('-t​​​​​​​ = 0 (Not otsu)\n')
         sys.exit(2)
@@ -617,12 +630,20 @@ if __name__ == '__main__':
 	
     if 'overlap' not in locals():
         overlap = 25 #25% overlap
-    print(overlap)	
+    elif overlap<5:
+        overlap = 5
+        print("Overlap minimum of 5% imposed")
+    elif overlap>95:
+        overlap = 95
+        print("Overlap maximum of 95% imposed")
+
+
+    print("Overlap: %i"% (overlap)	)
 
     if 'medfilt_radius' not in locals():
         medfilt_radius = 0
 	
-    print(medfilt_radius)
+    print("Median filter radius: %i" % (medfilt_radius))
 	
     if 'use_otsu' not in locals():
         use_otsu = False
@@ -682,663 +703,9 @@ if __name__ == '__main__':
         sys.exit(2)
 
 
-	# dem = r'F:/dbuscombe_github/adm/data/clip_20181006_Ophelia_Inlet_to_Beaufort_Inlet_1m_UTM18N_NAVD88_cog.tif'
+	# dem = r'F:/dbuscombe_github/dems/noisy/clip_20181006_Ophelia_Inlet_to_Beaufort_Inlet_1m_UTM18N_NAVD88_cog.tif'
 	# dem = os.path.normpath(dem)
 
 
 
-    # if mode =='autobatch':
-    #     try:
-    #         for dem in glob('*.tif'):
-    #             main(dem, None, model_mode) #threshold,
-    #     except:
-    #         print("No tif files found - check inputs for 'autobatch' or use 'prompt' mode. Exiting ...")
-    #         sys.exit(2)
-    # else: #'prompt' is default
 
-                #orig = orig.squeeze()
-                    #image = image/255
-
-        #main(dem)
-
-    #TARGET_SIZE = [tilesize, tilesize]
-    #BATCH_SIZE = 6
-    #NCLASSES = 1
-
-    # if DO_PARALLEL:
-    #     from joblib import Parallel, delayed
-
-        # counter = 0
-        # out_mask = np.zeros((padwidth+tilesize, padheight+tilesize), dtype=np.float16)
-        # if CALC_CONF:
-        #     out_conf = np.ones((padwidth+tilesize, padheight+tilesize), dtype=np.float32)
-        # n = np.zeros((padwidth+tilesize, padheight+tilesize), dtype=np.uint8)
-        # for i in tqdm(range(0, padwidth, tilesize)):
-        #     for j in range(0, padheight, tilesize):
-
-    # if USE_RGB:
-    #     weights_path = 'orthoclip_2class_batch_6.h5'
-    #     json_file = open(weights_path.replace('.h5','.json'), 'r')
-    #     loaded_model_json = json_file.read()
-    #     json_file.close()
-    #     model = model_from_json(loaded_model_json)
-    # else:
-# if USE_RGB:
-#     root = Tk()
-#     root.filename =  filedialog.askopenfilename(initialdir = "./",title = "Select file",filetypes = (("ortho geotiff file","*.tif"),("all files","*.*")))
-#     rgb = root.filename
-#     root.withdraw()
-#     print("... and %s" % (rgb))
-#
-# #-----------------------------------
-# def mean_iou(y_true, y_pred):
-#     """
-#     mean_iou(y_true, y_pred)
-#     This function computes the mean IoU between `y_true` and `y_pred`: this version is tensorflow (not numpy) and is used by tensorflow training and evaluation functions
-#
-#     INPUTS:
-#         * y_true: true masks, one-hot encoded.
-#             * Inputs are B*W*H*N tensors, with
-#                 B = batch size,
-#                 W = width,
-#                 H = height,
-#                 N = number of classes
-#         * y_pred: predicted masks, either softmax outputs, or one-hot encoded.
-#             * Inputs are B*W*H*N tensors, with
-#                 B = batch size,
-#                 W = width,
-#                 H = height,
-#                 N = number of classes
-#     OPTIONAL INPUTS: None
-#     GLOBAL INPUTS: None
-#     OUTPUTS:
-#         * IoU score [tensor]
-#     """
-#     yt0 = y_true[:,:,:,0]
-#     yp0 = tf.keras.backend.cast(y_pred[:,:,:,0] > 0.5, 'float32')
-#     inter = tf.math.count_nonzero(tf.logical_and(tf.equal(yt0, 1), tf.equal(yp0, 1)))
-#     union = tf.math.count_nonzero(tf.add(yt0, yp0))
-#     iou = tf.where(tf.equal(union, 0), 1., tf.cast(inter/union, 'float32'))
-#     return iou
-#
-# #-----------------------------------
-# def dice_coef(y_true, y_pred):
-#     """
-#     dice_coef(y_true, y_pred)
-#
-#     This function computes the mean Dice coefficient between `y_true` and `y_pred`: this version is tensorflow (not numpy) and is used by tensorflow training and evaluation functions
-#
-#     INPUTS:
-#         * y_true: true masks, one-hot encoded.
-#             * Inputs are B*W*H*N tensors, with
-#                 B = batch size,
-#                 W = width,
-#                 H = height,
-#                 N = number of classes
-#         * y_pred: predicted masks, either softmax outputs, or one-hot encoded.
-#             * Inputs are B*W*H*N tensors, with
-#                 B = batch size,
-#                 W = width,
-#                 H = height,
-#                 N = number of classes
-#     OPTIONAL INPUTS: None
-#     GLOBAL INPUTS: None
-#     OUTPUTS:
-#         * Dice score [tensor]
-#     """
-#     smooth = 1.
-#     y_true_f = tf.reshape(tf.dtypes.cast(y_true, tf.float32), [-1])
-#     y_pred_f = tf.reshape(tf.dtypes.cast(y_pred, tf.float32), [-1])
-#     intersection = tf.reduce_sum(y_true_f * y_pred_f)
-#     return (2. * intersection + smooth) / (tf.reduce_sum(y_true_f) + tf.reduce_sum(y_pred_f) + smooth)
-
-
-    #out_conf = out_conf/100
-    #out_conf = out_conf.astype('float32')
-    #out_conf = da.floor_divide(out_conf, n+0.00001)
-    #out_conf = out_conf.astype('float32')
-    #out_conf[out_conf>=1] = 0
-    #out_conf[out_conf<.5] = 0
-    #out_conf[out_conf>=.9] = 0
-    #out_conf[out_conf<.5] = 1
-    # out_conf = out_conf[:width,:height]
-    # out_conf = np.rot90(np.fliplr(out_conf))
-
-# prefix = id_generator()+'_' #'example_'
-# #-----------------------------------
-# def id_generator(size=6, chars=string.ascii_uppercase + string.digits):
-#     """
-#     generate a random string
-#     """
-#     return ''.join(random.choice(chars) for _ in range(size))
-# from skimage.io import imsave, imread
-# from skimage.transform import resize
-# import itertools #, random, string#, gc
-
-#
-# print("Creating dask arrays %s" % datetime.now())
-# n = da.from_array(n, chunks = 'auto') #chunks=(1000, 1000))
-#
-# out_mask = da.from_array(out_mask, chunks='auto') #(1000, 1000))
-# if CALC_CONF:
-#     out_conf = da.from_array(out_conf, chunks='auto') #(1000, 1000))
-#
-# out_mask = da.floor_divide(out_mask, n)
-
-# out_mask = np.divide(out_mask, n+0.00001) #out_conf/n
-
-
-# if USE_RGB:
-#     model = res_unet((TARGET_SIZE[0], TARGET_SIZE[1], 4), BATCH_SIZE, NCLASSES)
-# else:
-#     model = res_unet((TARGET_SIZE[0], TARGET_SIZE[1], 1), BATCH_SIZE, NCLASSES)
-#
-#
-
-# if USE_RGB:
-#     weights = 'orthoclip_2class_batch_6.h5'
-# else:
-#     weights = 'orthoclip_stdevonly_2class_batch_6.h5'
-
-# if USE_RGB:
-#     model = res_unet((TARGET_SIZE[0], TARGET_SIZE[1], 4), BATCH_SIZE, NCLASSES)
-# else:
-#     model = res_unet((TARGET_SIZE[0], TARGET_SIZE[1], 1), BATCH_SIZE, NCLASSES)
-#
-# model.compile(optimizer = 'adam', loss = 'categorical_crossentropy', metrics = [mean_iou, dice_coef])
-#
-# model.load_weights(weights)
-# #
-# model_json = model.to_json()
-# with open(weights.replace('.h5','.json'), "w") as json_file:
-#     json_file.write(model_json)
-
-
-# import dask_image.imread
-# import dask.delayed as dd
-# from dask.distributed import Client
-
-### step 1 : make chunks and save them to temporary png files
-# print('.....................................')
-# print('Making small image chunks ...')
-# print(datetime.now())
-
-
-# if OVERLAP:
-# out_mask = np.memmap(outfile, dtype='uint8', mode='r', shape=out_shape)
-
-#
-# #out_mask[out_mask==np.nan]=0
-# out_mask = np.divide(out_mask, n, out=out_mask)#, casting='unsafe' )# out_mask/n #divide out by number of times each cell was sampled
-
-# out_mask[out_mask>1] = 1
-
-####outfile = os.path.join(mkdtemp(), 'mask.dat')
-
-# gc.collect()
-
-#
-# #-----------------------------------
-# def chunk_image(i,j,tilesize, dem, USE_RGB, prefix, counter, rgb=None):
-#     """
-#     create and save image chunks to file
-#     """
-#     #print((counter,i,j))
-#     window = rasterio.windows.Window(i,j,tilesize, tilesize)
-#
-#     with rasterio.open(dem) as src: #rgb
-#         profile = src.profile
-#         subset = src.read(window=window)
-#     # print((i,j))
-#     #print(np.max(subset))
-#
-#     orig = subset.squeeze()
-#     if len(np.unique(orig))>1:
-#         orig[orig==profile['nodata']] = 0
-#         subset = std_convoluted(orig, 3)
-#         subset = z_exp(subset,n=0.5)
-#         #print(np.max(subset))
-#         subset = np.squeeze(subset).T
-#     else:
-#         subset=np.zeros((tilesize, tilesize), dtype=profile['dtype'])
-#     del orig
-#
-#     if subset.shape[0] < tilesize:
-#         #print('Padding %i' % (counter))
-#         subset_pad = np.zeros((tilesize, tilesize), dtype=profile['dtype'])
-#         x,y=subset.shape
-#         subset_pad[:x,:y] = subset
-#         del subset
-#         subset = subset_pad.copy()
-#     elif subset.shape[1] < tilesize:
-#         #print('Padding %i' % (counter))
-#         subset_pad = np.zeros((tilesize, tilesize), dtype=profile['dtype'])
-#         x,y=subset.shape
-#         subset_pad[:x,:y] = subset
-#         del subset
-#         subset = subset_pad.copy()
-#         del subset_pad
-#
-#     #print('size: %i %i'% (subset.shape[0], subset.shape[1]))
-#
-#     if counter<10:
-#         imsave('tmp/stdev/'+prefix+'000000'+str(counter)+'.png', subset.astype(np.uint8), compression=0, check_contrast=False)
-#     elif counter<100:
-#         imsave('tmp/stdev/'+prefix+'00000'+str(counter)+'.png', subset.astype(np.uint8), compression=0, check_contrast=False)
-#     elif counter<1000:
-#         imsave('tmp/stdev/'+prefix+'0000'+str(counter)+'.png', subset.astype(np.uint8),  compression=0, check_contrast=False)
-#     elif counter<10000:
-#         imsave('tmp/stdev/'+prefix+'000'+str(counter)+'.png', subset.astype(np.uint8),  compression=0, check_contrast=False)
-#     else:
-#         imsave('tmp/stdev/'+prefix+'00'+str(counter)+'.png', subset.astype(np.uint8),  compression=0, check_contrast=False)
-#
-#     del subset
-#
-#     if USE_RGB:
-#         with rasterio.open(rgb) as src: #rgb
-#             profile = src.profile
-#             subset = src.read(window=window)
-#
-#         subset = np.squeeze(subset).T
-#         # print('size: %i %i'% (subset.shape[0], subset.shape[1]))
-#
-#         if subset.shape[0] < tilesize:
-#             #print('Padding %i' % (counter))
-#             subset_pad = np.zeros((tilesize, tilesize, subset.shape[-1]), dtype=profile['dtype'])
-#             x,y,z=subset.shape
-#             subset_pad[:x,:y,:z] = subset
-#             del subset
-#             subset = subset_pad.copy()
-#         elif subset.shape[1] < tilesize:
-#             #print('Padding %i' % (counter))
-#             subset_pad = np.zeros((tilesize, tilesize, subset.shape[-1]), dtype=profile['dtype'])
-#             x,y,z=subset.shape
-#             subset_pad[:x,:y,:z] = subset
-#             del subset
-#             subset = subset_pad.copy()
-#             del subset_pad
-#
-#         #print('size: %i %i'% (subset.shape[0], subset.shape[1]))
-#
-#         if counter<10:
-#             imsave('tmp/ortho/'+prefix+'000000'+str(counter)+'.png', subset.astype(np.uint8), compression=0, check_contrast=False)
-#         elif counter<100:
-#             imsave('tmp/ortho/'+prefix+'00000'+str(counter)+'.png', subset.astype(np.uint8), compression=0, check_contrast=False)
-#         elif counter<1000:
-#             imsave('tmp/ortho/'+prefix+'0000'+str(counter)+'.png', subset.astype(np.uint8),  compression=0, check_contrast=False)
-#         elif counter<10000:
-#             imsave('tmp/ortho/'+prefix+'000'+str(counter)+'.png', subset.astype(np.uint8),  compression=0, check_contrast=False)
-#         else:
-#             imsave('tmp/ortho/'+prefix+'00'+str(counter)+'.png', subset.astype(np.uint8),  compression=0, check_contrast=False)
-#
-#         del subset
-
-# #-----------------------------------
-# def mask_chunk(sample_filename, tilesize):
-#     """
-#     create mask from image chunk
-#     """
-#     threshold = 0.5
-#
-#     if USE_RGB:
-#         image = seg_file2tensor_4band(sample_filename.replace('stdev', 'ortho'), sample_filename )/255
-#     else:
-#         image = seg_file2tensor_1band(sample_filename)/255
-#
-#     if len(np.unique(image))>1:
-#         image = tf.expand_dims(image, 0)
-#         #est_label = model.predict(image , batch_size=1).squeeze()
-#
-#         R = []; W = []
-#         counter = 0
-#         for k in np.linspace(0,int(image.shape[0]/5),5):
-#             k = int(k)
-#             R.append(np.roll(model.predict(np.roll(image,k) , batch_size=1).squeeze(),-k))
-#             counter +=1
-#             if k==0:
-#                 W.append(0.1)
-#             else:
-#                 W.append(1/np.sqrt(k))
-#
-#         K.clear_session()
-#         est_label = np.round(np.average(np.dstack(R), axis=-1, weights = W)).astype('uint8')
-#
-#         #confidence is computed as deviation from 0.5
-#         conf = 1-est_label
-#         conf[est_label<threshold] = est_label[est_label<threshold]
-#         conf = 1-conf
-#         #model_conf = np.sum(conf)/np.prod(conf.shape)
-#         #print('Overall model confidence = %f'%(model_conf))
-#
-#         est_label[est_label<threshold] = 0
-#         est_label[est_label>threshold] = 1
-#         #conf = (100*conf).astype('uint8')  #turn this into 8-bit for more efficient ram usage
-#         # conf[conf<50]=50
-#         # conf[conf>100]=100
-#
-#     else:
-#         est_label = conf = None
-#
-#     return est_label, conf
-
-# try:
-#     os.mkdir('tmp')
-#     if USE_RGB:
-#         os.mkdir('tmp/ortho')
-#     os.mkdir('tmp/stdev')
-# except:
-#     pass
-#
-# if DO_PARALLEL:
-#     if OVERLAP:
-#         ivec = range(0, padwidth, int(tilesize/2)) #25% overlap
-#         jvec = range(0, padheight, int(tilesize/2))
-#     else:
-#         ivec = range(0, padwidth, tilesize)
-#         jvec = range(0, padheight, tilesize)
-#
-#     #w = Parallel(n_jobs=-1, verbose=0, pre_dispatch='2 * n_jobs', max_nbytes=None)(delayed(print)((counter,i,j)) for counter,(i,j) in enumerate(itertools.product(ivec,jvec)))
-#     if USE_RGB:
-#         w = Parallel(n_jobs=-1, verbose=0)(delayed(chunk_image)(i,j,tilesize, dem, USE_RGB, prefix, counter, rgb) for counter,(i,j) in enumerate(itertools.product(ivec,jvec)))
-#     else:
-#         w = Parallel(n_jobs=-1, verbose=0)(delayed(chunk_image)(i,j,tilesize, dem, USE_RGB, prefix, counter) for counter,(i,j) in enumerate(itertools.product(ivec,jvec)))
-#
-# else:
-#     counter=0
-#     for i in tqdm(range(0, padwidth, tilesize)):
-#         for j in range(0, padheight, tilesize):
-#
-#             if USE_RGB:
-#                 chunk_image(i,j,tilesize, dem, USE_RGB, prefix, counter, rgb)
-#             else:
-#                 chunk_image(i,j,tilesize, dem, USE_RGB, prefix, counter)
-#
-#             counter+=1
-
-
-#=======================================================
-## step 3: use the model for prediction
-
-
-# sample_filenames = sorted(tf.io.gfile.glob('tmp/stdev'+os.sep+'*.png'))
-# if OVERLAP:
-#     print('Number of samples: %i (50 percent overlap)' % (len(sample_filenames)))
-# else:
-#     print('Number of samples: %i' % (len(sample_filenames)))
-
-# def apply_mask(image):
-#     # return model.predict(tf.expand_dims(image, 0) , batch_size=1).squeeze()
-#
-#     if np.max(image).compute()<1:
-#         return np.zeros((TARGET_SIZE[0], TARGET_SIZE[1]), dtype=np.float32), np.zeros((TARGET_SIZE[0], TARGET_SIZE[1]), dtype=np.float32)
-#     else:
-#
-#         if USE_RGB:
-#             model = res_unet((TARGET_SIZE[0], TARGET_SIZE[1], 4), BATCH_SIZE, NCLASSES)
-#         else:
-#             model = res_unet((TARGET_SIZE[0], TARGET_SIZE[1], 1), BATCH_SIZE, NCLASSES)
-#
-#         model.compile(optimizer = 'adam', loss = 'categorical_crossentropy', metrics = [mean_iou, dice_coef])
-#
-#         model.load_weights(weights)
-#         K.clear_session()
-#
-#         est_label = model.predict(image.compute().numpy().T , batch_size=1).squeeze()
-#         K.clear_session()
-#
-#         conf = 1-est_label
-#         conf[est_label<.5] = est_label[est_label<.5]
-#         conf = 1-conf
-#
-#         return est_label, conf
-#
-
-#
-# filename_pattern ='tmp/stdev'+os.sep+'*.png'
-# # x = dask_image.imread.imread(sample_filenames)
-#
-# lazy_arrays = [dd(seg_file2tensor_1band)(fn) for fn in sorted(glob(filename_pattern))]
-# # Create a dask array from a list of chunk png files as a dask delayed value
-# lazy_arrays = [da.from_delayed(x, shape=(tilesize, tilesize), dtype=np.uint8) for x in tqdm(lazy_arrays)]
-# lazy_arrays = da.stack(lazy_arrays) #we stack the array to make it 4d (2d x depth) rather than default
-# print("Array of size {} imported".format(lazy_arrays.shape))
-
-# i never understand dask ...
-# client = Client()  # set up local cluster on your laptop
-# client
-#result = client.submit(apply_mask, lazy_arrays)
-# w = apply_mask(lazy_arrays)
-
-# w = Parallel(n_jobs=-1, verbose=0, max_nbytes=None)(delayed(apply_mask)(lazy_arrays[k]) for k in tqdm(range(len(lazy_arrays)))) #pre_dispatch='2 * n_jobs',
-
-#
-# counter=0
-# if OVERLAP:
-#     out_mask = np.zeros((padwidth+int(tilesize/2), padheight+int(tilesize/2)), dtype=np.uint8)
-#     if CALC_CONF:
-#         out_conf = np.ones((padwidth+int(tilesize/2), padheight+int(tilesize/2)), dtype=np.float32)
-#     n = np.zeros((padwidth+int(tilesize/2), padheight+int(tilesize/2)), dtype=np.uint8)
-#     for i in tqdm(range(0, width, int(tilesize/2))):
-#         for j in range(0, height, int(tilesize/2)):
-#
-#             est_label, conf = mask_chunk(sample_filenames[counter], tilesize)
-#             #est_label[np.isnan(est_label)] = 0
-#             #est_label[np.isinf(est_label)] = 0
-#             if conf is not None:
-#                 out_mask[i:i+tilesize,j:j+tilesize] += est_label.astype('uint8') #fill in that portion of big mask
-#                 if CALC_CONF:
-#                     out_conf[i:i+tilesize,j:j+tilesize] += conf.astype('float32') #fill out that portion of the big confidence raster
-#                 n[i:i+tilesize,j:j+tilesize] += 1
-#
-#             counter +=1
-#             if CALC_CONF:
-#                 del conf
-#             del est_label
-#     print(datetime.now())
-#     #out_mask[out_mask==np.nan]=0
-#     out_mask = np.divide(out_mask, n, out=out_mask, casting='unsafe' )# out_mask/n #divide out by number of times each cell was sampled
-#     out_mask = out_mask.astype('uint8')
-#     out_mask[out_mask>1] = 1
-#
-#     out_mask = out_mask[:width,:height]
-#     out_mask = np.rot90(np.fliplr(out_mask))
-#     out_shape = out_mask.shape
-#
-#     #outfile = os.path.join(mkdtemp(), 'mask.dat')
-#     outfile = TemporaryFile()
-#     fp = np.memmap(outfile, dtype='uint8', mode='w+', shape=out_mask.shape)
-#     fp[:] = out_mask[:]
-#     fp.flush()
-#     del out_mask
-#     del fp
-#     gc.collect()
-#
-#     if CALC_CONF:
-#         #out_conf = out_conf/100
-#         out_conf = out_conf.astype('float32')
-#         out_conf = np.divide(out_conf, n+0.00001) #out_conf/n
-#         del n
-#         out_conf = out_conf.astype('float32')
-#         out_conf[out_conf==np.nan]=0
-#         out_conf[out_conf==np.inf]=0
-#         out_conf[out_conf>=1] = 0
-#         out_conf[out_conf<.5] = 0
-#         out_conf[out_conf>=.9] = 0
-#         out_conf[out_conf<.5] = 1
-#         out_conf = out_conf[:width,:height]
-#         out_conf = np.rot90(np.fliplr(out_conf))
-#
-# else:
-#
-#     out_mask = np.zeros((padwidth, padheight), dtype=np.uint8)
-#     if CALC_CONF:
-#         out_conf = np.ones((padwidth, padheight), dtype=np.uint8)
-#     for i in tqdm(range(0, width, tilesize)):
-#         for j in range(0, height, tilesize):
-#
-#             est_label, conf = mask_chunk(sample_filenames[counter], tilesize)
-#             if conf is not None:
-#                 out_mask[i:i+tilesize,j:j+tilesize] = est_label.astype('uint8') #fill in that portion of big mask
-#                 if CALC_CONF:
-#                     out_conf[i:i+tilesize,j:j+tilesize] = conf.astype('uint8') #fill out that portion of the big confidence raster
-#
-#             counter +=1
-#             if CALC_CONF:
-#                 del conf
-#             del est_label
-#
-#     out_mask = out_mask[:width,:height]
-#     out_mask = np.rot90(np.fliplr(out_mask))
-#     out_shape = out_mask.shape
-#
-#     if CALC_CONF:
-#         out_conf = out_conf.astype('float32')
-#         out_conf = out_conf[:width,:height]
-#         out_conf = np.rot90(np.fliplr(out_conf))
-
-
-# out_conf = out_conf.astype('float32')
-# out_mask = out_mask.astype('uint8')
-
-
-#=======================================================
-# step 4, tify up
-# delete tmp files
-# print('.....................................')
-# print('Removing temporary images ...')
-#
-# if USE_RGB:
-#     for f in glob('tmp/ortho/*.*'):
-#         os.remove(f)
-#     os.rmdir('tmp/ortho')
-# for f in glob('tmp/stdev/*.*'):
-#     os.remove(f)
-# os.rmdir('tmp/stdev')
-# os.rmdir('tmp')
-# gc.collect()
-
-
-# #=============================
-# # mask orhto
-# if USE_RGB:
-#     with rasterio.open(rgb) as src: #rgb
-#         profile = src.profile
-#         bigtiff = src.read()
-#
-#     bigtiff = mask(bigtiff,profile,out_mask)
-#     del out_mask
-#
-#     #wrte maked geotiff to file
-#     with rasterio.Env():
-#         with rasterio.open(rgb.replace('.tif','_automasked_rgb.tif'), 'w', **profile) as dst:
-#             dst.write(bigtiff)
-#     del bigtiff
-#     gc.collect()
-#
-# else:
-#     from tkinter import messagebox
-#     root= Tk()
-#     MsgBox = messagebox.askquestion ('Mask ortho?','Would you like to use this mask to mask an ortho?',icon = 'warning')
-#     root.destroy()
-#     if MsgBox == 'yes':
-#         root = Tk()
-#         root.filename =  filedialog.askopenfilename(initialdir = "./",title = "Select file",filetypes = (("ortho geotiff file","*.tif"),("all files","*.*")))
-#         rgb = root.filename
-#         root.withdraw()
-#
-#         print('.....................................')
-#         print('Writing out masked RGB ortho ...')
-#         print(datetime.now())
-#
-#         with rasterio.open(rgb) as src: #rgb
-#             profile = src.profile
-#             bigtiff = src.read()
-#
-#         bigtiff = mask(bigtiff,profile,out_mask)
-#         del out_mask
-#
-#         #wrte maked geotiff to file
-#         with rasterio.Env():
-#             with rasterio.open(rgb.replace('.tif','_automasked_rgb.tif'), 'w', **profile) as dst:
-#                 dst.write(bigtiff)
-#         del bigtiff
-#         gc.collect()
-
-# #-----------------------------------
-# def seg_file2tensor_1band(f):
-#     """
-#     "seg_file2tensor(f)"
-#     This function reads a jpeg image from file into a cropped and resized tensor,
-#     for use in prediction with a trained segmentation model
-#     INPUTS:
-#         * f [string] file name of jpeg
-#     OPTIONAL INPUTS: None
-#     OUTPUTS:
-#         * image [tensor array]: unstandardized image
-#     GLOBAL INPUTS: TARGET_SIZE
-#     """
-#     bits = tf.io.read_file(f)
-#     if 'jpg' in f:
-#         image = tf.image.decode_jpeg(bits)
-#     elif 'png' in f:
-#         image = tf.image.decode_png(bits)
-#
-#     w = tf.shape(image)[0]
-#     h = tf.shape(image)[1]
-#     tw = TARGET_SIZE[0]
-#     th = TARGET_SIZE[1]
-#     resize_crit = (w * th) / (h * tw)
-#     image = tf.cond(resize_crit < 1,
-#                   lambda: tf.image.resize(image, [w*tw/w, h*tw/w]), # if true
-#                   lambda: tf.image.resize(image, [w*th/h, h*th/h])  # if false
-#                  )
-#
-#     nw = tf.shape(image)[0]
-#     nh = tf.shape(image)[1]
-#     image = tf.image.crop_to_bounding_box(image, (nw - tw) // 2, (nh - th) // 2, tw, th)
-#
-#     return image
-#
-# #-----------------------------------
-# def seg_file2tensor_4band(f, fir):
-#     """
-#     "seg_file2tensor(f)"
-#     This function reads a jpeg image from file into a cropped and resized tensor,
-#     for use in prediction with a trained segmentation model
-#     INPUTS:
-#         * f [string] file name of jpeg
-#     OPTIONAL INPUTS: None
-#     OUTPUTS:
-#         * image [tensor array]: unstandardized image
-#     GLOBAL INPUTS: TARGET_SIZE
-#     """
-#     bits = tf.io.read_file(f)
-#     if 'jpg' in f:
-#         image = tf.image.decode_jpeg(bits)
-#     elif 'png' in f:
-#         image = tf.image.decode_png(bits)
-#
-#     bits = tf.io.read_file(fir)
-#     if 'jpg' in fir:
-#         nir = tf.image.decode_jpeg(bits)
-#     elif 'png' in f:
-#         nir = tf.image.decode_png(bits)
-#
-#     image = tf.concat([image, nir],-1)[:,:,:4]
-#
-#     w = tf.shape(image)[0]
-#     h = tf.shape(image)[1]
-#     tw = TARGET_SIZE[0]
-#     th = TARGET_SIZE[1]
-#     resize_crit = (w * th) / (h * tw)
-#     image = tf.cond(resize_crit < 1,
-#                   lambda: tf.image.resize(image, [w*tw/w, h*tw/w]), # if true
-#                   lambda: tf.image.resize(image, [w*th/h, h*th/h])  # if false
-#                  )
-#
-#     nw = tf.shape(image)[0]
-#     nh = tf.shape(image)[1]
-#     image = tf.image.crop_to_bounding_box(image, (nw - tw) // 2, (nh - th) // 2, tw, th)
-#
-#     return image
-#
